@@ -1,44 +1,61 @@
-# Интеграция с 3X-UI_KIT
+# 3X-UI_KIT + RoscomVPN routing
 
-Эта директория добавляет RoscomVPN/HAPP routing к оригинальному
-[itsnotkubrick/3X-UI_KIT](https://github.com/itsnotkubrick/3X-UI_KIT)
-без замены самой панели 3x-ui.
+Кастомизированный установщик поверх
+[itsnotkubrick/3X-UI_KIT](https://github.com/itsnotkubrick/3X-UI_KIT).
 
-## Как работает
+Он не заменяет 3x-ui на сторонний форк: по-прежнему ставится официальный
+`MHSanaei/3x-ui v3.8.5`, как в upstream KIT.
 
-Оригинальный 3X-UI_KIT уже ставит `kit-sub.py` как reverse proxy перед подпиской 3x-ui.
-Эта версия добавляет к успешным ответам подписки:
+## Что изменено
+
+1. В настройках подписки автоматически включается штатный HAPP routing:
+   - `subEnableRouting = true`
+   - `subRoutingRules = https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/HAPP/DEFAULT-CUSTOM.DEEPLINK`
+2. Официальный 3x-ui сам обновляет удалённые правила и хранит последнее валидное значение.
+3. `kit-sub.py` пропускает наружу заголовки `Routing-Enable` и `Routing`.
+4. Все остальные функции оригинального 3X-UI_KIT сохранены.
+
+Это аналогично механизму RoscomVPN в `hydraponique/3x-ui`, но без замены официальной панели.
+
+## Установка нового сервера
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/3x-ui.sh)
+```
+
+Все параметры оригинального установщика поддерживаются, например:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/3x-ui.sh) --protocols reality,xhttp,hy2,awg3 -y
+```
+
+## Уже установленный 3X-UI_KIT
+
+В панели 3x-ui откройте настройки подписки / HAPP routing и задайте:
 
 ```
-Routing-Enable: true
-Routing: happ://routing/onadd/<base64>
-```
-
-Это тот же механизм, который использует `hydraponique/3x-ui`, но реализованный
-на уровне `kit-sub`. Routing deeplink берётся из:
-
-```
+Enable routing: ON
+Routing rules:
 https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/HAPP/DEFAULT-CUSTOM.DEEPLINK
 ```
 
-Значение кэшируется на 10 минут. При временной недоступности GitHub используется
-последняя успешно загруженная версия до перезапуска `kit-sub`.
-
-## Установка поверх уже установленного 3X-UI_KIT
+Если наружная подписка идёт через `kit-sub`, дополнительно замените его на версию из этого репозитория:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/install-routing-addon.sh)
+curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/kit-sub.py \
+  -o /usr/local/lib/kit-sub/kit_sub.py
+systemctl restart kit-sub
 ```
 
-Скрипт:
+## Кастомные DIRECT-правила
 
-1. заменяет только `/usr/local/lib/kit-sub/kit_sub.py`;
-2. добавляет в `/etc/kit-sub/config.json` параметры `routing_enable`, `routing_url`, `routing_ttl`;
-3. перезапускает `kit-sub.service`.
+Правила хранятся в корневом `custom-direct.json`. Сейчас там:
 
-Повторный запуск безопасен.
+- `domain:maicraft.tech`
+- `domain:vds.first-server.net`
+- `domain:mgr.hosting-minecraft.pro`
+- `domain:my.hosting-minecraft.pro`
+- `157.228.189.164/32`
 
-## Важно при обновлении 3X-UI_KIT
-
-Повторный запуск оригинального установщика 3X-UI_KIT может вернуть upstream-версию
-`kit-sub.py`. После обновления KIT достаточно повторно запустить addon-команду выше.
+GitHub Actions пересобирает `HAPP/DEFAULT-CUSTOM.DEEPLINK` поверх свежего
+`hydraponique/roscomvpn-routing/HAPP/DEFAULT.JSON`.
