@@ -142,13 +142,15 @@ main() {
     die "3X-UI уже установлена другим способом — не трогаю её. Удалите её (x-ui uninstall) или добавьте REALITY в панели вручную."
   fi
 
-  local PORT=443 SNI="" PANEL_SSL=auto HOST="" UFW=yes NAME="admin" yes=no protos=all ucert="" ukey="" multi=no
+  local PORT=443 SNI="" PANEL_SSL=auto HOST="" DOMAIN="" FALLBACK_URL="" UFW=yes NAME="admin" yes=no protos=all ucert="" ukey="" multi=no
   while [[ $# -gt 0 ]]; do
     case $1 in
       --port) PORT=$2; shift 2 ;;
       --sni) SNI=$2; shift 2 ;;
       --panel-ssl) PANEL_SSL=$2; shift 2 ;;
       --host) HOST=$2; shift 2 ;;
+      --domain) DOMAIN=$2; shift 2 ;;
+      --fallback-url) FALLBACK_URL=$2; shift 2 ;;
       --user) NAME=$2; shift 2 ;;
       --protocols) protos=$2; shift 2 ;;
       --cert) ucert=$2; shift 2 ;;
@@ -163,10 +165,22 @@ main() {
   [[ $PORT =~ ^[0-9]+$ ]] && ((PORT > 0 && PORT < 65536)) || die "Неверный порт: $PORT"
   [[ $NAME =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || die "Имя: латиница, цифры, _ . - (до 32 символов)."
   [[ $PANEL_SSL =~ ^(auto|ip|none)$ ]] || die "--panel-ssl: auto, ip или none"
+  if [[ -n $DOMAIN ]]; then
+    [[ $DOMAIN =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && $DOMAIN == *.* ]] || die "--domain: укажите корректное DNS-имя, например connect.example.com"
+    DOMAIN=${DOMAIN,,}
+    if [[ -n $FALLBACK_URL ]]; then
+      [[ $FALLBACK_URL =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || die "--fallback-url: поддерживается HTTPS URL вида https://example.com/"
+      FALLBACK_URL=${FALLBACK_URL%/}/
+    fi
+  elif [[ -n $FALLBACK_URL ]]; then
+    die "--fallback-url используется вместе с --domain"
+  fi
   if [[ -n $ucert || -n $ukey ]]; then
     [[ -s $ucert && -s $ukey ]] || die "Нужны оба файла: --cert fullchain.pem --key privkey.pem"
     openssl x509 -in "$ucert" -noout 2>/dev/null || die "$ucert — не сертификат в формате PEM"
     PANEL_SSL=custom
+  elif [[ -n $DOMAIN ]]; then
+    PANEL_SSL=domain
   fi
   case $protos in
     all) PROTOS=("${DEFAULT_PROTOS[@]}") ;;
@@ -187,10 +201,10 @@ main() {
       PANEL_SSL=ip
     fi
   fi
-  [[ $PANEL_SSL == ip ]] && port_busy 80 tcp && die "Для сертификата панели нужен свободный порт 80/tcp."
+  [[ $PANEL_SSL == ip || $PANEL_SSL == domain ]] && port_busy 80 tcp && die "Для Let's Encrypt нужен свободный порт 80/tcp."
   # Доверенный сертификат (Let's Encrypt или свой) — панель и подписка доступны снаружи по HTTPS.
   TRUSTED=no
-  [[ $PANEL_SSL == ip || $PANEL_SSL == custom ]] && TRUSTED=yes
+  [[ $PANEL_SSL == ip || $PANEL_SSL == domain || $PANEL_SSL == custom ]] && TRUSTED=yes
   if [[ $PANEL_SSL == custom ]]; then
     mkdir -p /root/cert/custom
     install -m 644 "$ucert" /root/cert/custom/fullchain.pem
@@ -201,9 +215,15 @@ main() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y -qq curl jq openssl qrencode ca-certificates iproute2 ufw socat cron >/dev/null
+  [[ -n $DOMAIN ]] && apt-get install -y -qq certbot >/dev/null
 
   HOST=${HOST:-$(public_ip)}
   [[ -n $HOST ]] || die "Не удалось узнать внешний IP. Укажите его: --host 1.2.3.4"
+  if [[ -n $DOMAIN ]]; then
+    local origin_ip="$HOST"
+    HOST="$DOMAIN"
+    say "Публичный домен: ${B}$DOMAIN${N} (A/AAAA должен указывать на этот VPS; Let's Encrypt проверит это автоматически)"
+  fi
 
   if [[ -z $SNI ]]; then
     say "Выбираю сайт для маскировки REALITY"
@@ -323,7 +343,7 @@ main() {
     ssh_port=${ssh_port:-22}
     OPEN+=("$ssh_port/tcp")
     [[ $TRUSTED == yes && $SINGLE == no ]] && OPEN+=("$XUI_PANEL_PORT/tcp" "$SUB_PORT/tcp")
-    [[ $PANEL_SSL == ip ]] && OPEN+=("80/tcp")
+    [[ $PANEL_SSL == ip || $PANEL_SSL == domain ]] && OPEN+=("80/tcp")
     say "Настраиваю ufw: ${OPEN[*]}"
     local o
     for o in "${OPEN[@]}"; do ufw allow "$o" >/dev/null; done
@@ -403,6 +423,23 @@ setup_tls_cert() {
   PIN=""
   if [[ $PANEL_SSL == custom ]]; then
     CERT=/root/cert/custom/fullchain.pem; KEY=/root/cert/custom/privkey.pem
+  elif [[ $PANEL_SSL == domain ]]; then
+    local live="/etc/letsencrypt/live/$DOMAIN"
+    if [[ ! -s "$live/fullchain.pem" || ! -s "$live/privkey.pem" ]]; then
+      say "Выпускаю отдельный Let's Encrypt сертификат для ${B}$DOMAIN${N}"
+      certbot certonly --standalone --non-interactive --agree-tos --register-unsafely-without-email \
+        --cert-name "$DOMAIN" -d "$DOMAIN"
+    else
+      say "Использую существующий отдельный сертификат Let's Encrypt для ${B}$DOMAIN${N}"
+    fi
+    CERT="$live/fullchain.pem"; KEY="$live/privkey.pem"
+    install -d -m 755 /etc/letsencrypt/renewal-hooks/deploy
+    cat >/etc/letsencrypt/renewal-hooks/deploy/3x-ui-kit-nginx <<'HOOK'
+#!/bin/sh
+systemctl is-active --quiet nginx && systemctl reload nginx || true
+HOOK
+    chmod 755 /etc/letsencrypt/renewal-hooks/deploy/3x-ui-kit-nginx
+    systemctl enable --now certbot.timer >/dev/null 2>&1 || true
   elif [[ $PANEL_SSL == ip && -s /root/cert/ip/fullchain.pem ]]; then
     CERT=/root/cert/ip/fullchain.pem; KEY=/root/cert/ip/privkey.pem
   else
@@ -828,6 +865,18 @@ HTML
     echo "    }"
     echo "}"
   } >/etc/nginx/kit-stream.conf
+  local fallback_location
+  if [[ -n $DOMAIN && -n $FALLBACK_URL ]]; then
+    fallback_location="    location / {
+        return 302 $FALLBACK_URL;
+    }"
+  else
+    fallback_location="    location / {
+        root /var/www/kit;
+        index index.html;
+    }"
+  fi
+
   cat >/etc/nginx/conf.d/kit.conf <<NGX
 # Сгенерировано 3x-ui.sh (3X-UI KIT) — перезаписывается при повторном запуске.
 server {
@@ -858,10 +907,7 @@ $locs
         proxy_set_header X-Forwarded-For \$proxy_protocol_addr;
         proxy_set_header X-Forwarded-Proto https;
     }
-    location / {
-        root /var/www/kit;
-        index index.html;
-    }
+$fallback_location
 }
 NGX
   grep -q 'kit-stream.conf' /etc/nginx/nginx.conf || echo 'include /etc/nginx/kit-stream.conf;' >>/etc/nginx/nginx.conf
@@ -997,8 +1043,11 @@ usage() {
   --sni сайт          сайт для маскировки (по умолчанию подбирается сам)
   --panel-ssl ip|none сертификат панели: ip — Let's Encrypt на IP (нужен порт 80),
                       none — панель только через SSH-туннель (по умолчанию выбирается сам)
-  --cert файл --key файл  свой сертификат (например, для домена) вместо Let's Encrypt на IP;
-                      тогда --host — это домен из сертификата
+  --domain имя        отдельный Let's Encrypt сертификат для субдомена, например connect.example.com
+                      (существующие example.com / *.example.com не изменяются)
+  --fallback-url URL  обычные HTTPS-запросы на --domain перенаправлять, например https://example.com
+  --cert файл --key файл  свой сертификат вместо автоматического Let's Encrypt;
+                      тогда --host — имя/IP из сертификата
   --user admin        имя первого клиента
   --host 1.2.3.4      адрес в ссылке, если IP определился неверно
   --no-ufw            не трогать файрвол
