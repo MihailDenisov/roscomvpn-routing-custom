@@ -547,7 +547,7 @@ proto_reality() {
     network: "tcp", security: "reality", externalProxy: [],
     realitySettings: {show: false, xver: 0, target: ($sni + ":443"), serverNames: [$sni], privateKey: $k.privateKey,
       minClientVer: "", maxClientVer: "", maxTimediff: 0, shortIds: [$sid],
-      settings: {publicKey: $k.publicKey, fingerprint: "chrome", serverName: "", spiderX: "/"}},
+      settings: {publicKey: $k.publicKey, fingerprint: "qq", serverName: "", spiderX: "/"}},
     tcpSettings: {acceptProxyProtocol: false, header: {type: "none"}}}')
   if [[ $SINGLE == yes ]]; then
     stream=$(jq -c --argjson e "$(ext_proxy same)" '.externalProxy = $e | .tcpSettings.acceptProxyProtocol = true' <<<"$stream")
@@ -564,7 +564,7 @@ proto_xhttp() {
   stream=$(jq -nc --arg sni "$SNI" --argjson k "$keys" --arg sid "$(openssl rand -hex 8)" --arg path "/$(rand_str 10 | tr 'A-Z' 'a-z')" '{
     network: "xhttp", security: "reality", xhttpSettings: {path: $path, mode: "auto"},
     realitySettings: {target: ($sni + ":443"), serverNames: [$sni], privateKey: $k.privateKey, shortIds: [$sid],
-      settings: {publicKey: $k.publicKey, fingerprint: "chrome", spiderX: "/"}}}')
+      settings: {publicKey: $k.publicKey, fingerprint: "qq", spiderX: "/"}}}')
   if [[ $SINGLE == yes ]]; then
     stream=$(jq -c --arg sni "$SNI2" --argjson e "$(ext_proxy same)" '.realitySettings.target = ($sni + ":443") | .realitySettings.serverNames = [$sni]
       | .externalProxy = $e | .sockopt = {acceptProxyProtocol: true}' <<<"$stream")
