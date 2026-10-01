@@ -344,6 +344,12 @@ main() {
     OPEN+=("$ssh_port/tcp")
     [[ $TRUSTED == yes && $SINGLE == no ]] && OPEN+=("$XUI_PANEL_PORT/tcp" "$SUB_PORT/tcp")
     [[ $PANEL_SSL == ip || $PANEL_SSL == domain ]] && OPEN+=("80/tcp")
+    # AmneziaWG 3.1 — резерв: 8443/udp должен оставаться закрытым, пока его явно не откроют.
+    if [[ " ${PROTOS[*]} " == *" awg3 "* ]]; then
+      while ufw status 2>/dev/null | grep -qE "^\${PORTS[awg3]}/udp[[:space:]]+ALLOW"; do
+        ufw --force delete allow "${PORTS[awg3]}/udp" >/dev/null 2>&1 || break
+      done
+    fi
     say "Настраиваю ufw: ${OPEN[*]}"
     local o
     for o in "${OPEN[@]}"; do ufw allow "$o" >/dev/null; done
@@ -673,7 +679,15 @@ awg_inbound() { # remark port subnet client-ip suffix mode
 }
 
 proto_awg() { awg_inbound "AmneziaWG" "${PORTS[awg]}" 10.8.1.0 10.8.1.2/32 awg classic; }
-proto_awg3() { awg_inbound "AmneziaWG-3.1" "${PORTS[awg3]}" 10.8.2.0 10.8.2.2/32 awg3 full; }
+proto_awg3() {
+  awg_inbound "AmneziaWG-3.1" "${PORTS[awg3]}" 10.8.2.0 10.8.2.2/32 awg3 full
+  # Резервный транспорт: создаём inbound, но наружу UDP-порт по умолчанию не открываем.
+  local filtered=() item
+  for item in "${OPEN[@]}"; do
+    [[ $item == "${PORTS[awg3]}/udp" ]] || filtered+=("$item")
+  done
+  OPEN=("${filtered[@]}")
+}
 
 telegram_reachable() {
   local ip
