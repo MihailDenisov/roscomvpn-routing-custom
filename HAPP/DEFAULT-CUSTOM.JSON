@@ -38,8 +38,7 @@
   ],
   "DirectIp": [
     "geoip:private",
-    "geoip:direct",
-    "157.228.189.164/32"
+    "geoip:direct"
   ],
   "ProxySites": [
     "geosite:google-play",
