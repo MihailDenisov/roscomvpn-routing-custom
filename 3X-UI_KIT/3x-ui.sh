@@ -29,7 +29,7 @@ ALL_PROTOS=(reality hy2 xhttp ws trojan vmess ss tuic wg awg awg3 mtproto)
 # Обычный WireGuard в России режет DPI (проверено 2026-09-27: рукопожатие доходит до сервера,
 # ответ — нет), а его попытки могут привлечь блокировку IP. По умолчанию не ставим.
 DEFAULT_PROTOS=(reality hy2 xhttp ws trojan vmess ss tuic awg awg3 mtproto)
-declare -A PORTS=([xhttp]=8443 [ws]=2053 [trojan]=2083 [vmess]=2087 [ss]=8388 [tuic]=8444 [wg]=51820 [awg]=51821 [awg3]=51822 [mtproto]=8445)
+declare -A PORTS=([xhttp]=8443 [ws]=2053 [trojan]=2083 [vmess]=2087 [ss]=8388 [tuic]=8444 [wg]=51820 [awg]=51821 [awg3]=8443 [mtproto]=8445)
 PROTOS=(); CREATED=(); OPEN=()
 # Режим «всё TCP на 443»: nginx разводит по SNI и путям, подключения слушают только localhost.
 SINGLE=no
