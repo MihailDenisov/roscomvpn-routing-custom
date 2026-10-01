@@ -753,12 +753,15 @@ awg_attach() { # имя subId [лимит-байт] [срок-мс] [устро�
   done
 }
 
-KIT_CLI_URL="https://raw.githubusercontent.com/itsnotkubrick/3X-UI_KIT/main/scripts/kit.sh"
+KIT_CLI_URL="https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/kit.sh"
 
 install_kit_cli() {
   install -d -m 700 /etc/kit
   {
     printf 'HOST=%q\n' "$HOST"
+    printf 'DOMAIN=%q\n' "${DOMAIN:-}"
+    printf 'FALLBACK_URL=%q\n' "${FALLBACK_URL:-}"
+    printf 'ROUTING_URL=%q\n' "$ROUTING_URL"
     printf 'SUB_BASE=%q\n' "${SUB_URL%$SUBID}"
     printf 'SUB_PATH=%q\n' "$SUB_PATH"
     printf 'SUB_INTERNAL=%q\n' "${SUB_INTERNAL:-$SUB_PORT}"
