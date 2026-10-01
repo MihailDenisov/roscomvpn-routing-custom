@@ -8,8 +8,7 @@ https://github.com/itsnotkubrick/3X-UI_KIT
     из подписки «<id>-awg»: Mihomo умеет AmneziaWG, а остальные приложения нет;
   * остальные приложения и браузер — ответ 3X-UI как есть (ссылки или страница);
   * заголовок Subscription-Userinfo: expire=0 («бессрочно») убирается — иначе
-    приложения показывают срок «01.01.1970»;
-  * HAPP получает Routing-Enable/Routing с RoscomVPN routing profile.
+    приложения показывают срок «01.01.1970».
 
 Настройки — /etc/kit-sub/config.json. Сертификат перечитывается сам после продления.
 """
@@ -35,56 +34,16 @@ CLASH_UA = re.compile(r"clash|mihomo|flclash|stash|nyanpasu|meta", re.I)
 NO_AWG_UA = re.compile(r"karing|hiddify|nekobox|sing-?box|husi|stash|shadowrocket|v2box|streisand|happ|loon|surge|quantumult", re.I)
 SUB_ID = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 PASS_HEADERS = ("content-type", "content-disposition", "profile-title", "profile-update-interval",
-                "profile-web-page-url", "subscription-userinfo", "support-url", "cache-control")
+                "profile-web-page-url", "subscription-userinfo", "support-url", "cache-control",
+                "routing-enable", "routing")
 
 with open(CONFIG, encoding="utf-8") as f:
     CONF = json.load(f)
 PATH = "/" + CONF["path"].strip("/") + "/"
 
-ROUTING_URL = CONF.get(
-    "routing_url",
-    "https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/HAPP/DEFAULT-CUSTOM.DEEPLINK",
-)
-ROUTING_ENABLE = bool(CONF.get("routing_enable", True))
-ROUTING_TTL = int(CONF.get("routing_ttl", 600))
-_routing_lock = threading.Lock()
-_routing_value = ""
-_routing_fetched_at = 0.0
-
 
 def log(msg):
     print(msg, flush=True)
-
-
-def routing_rules():
-    """Возвращает HAPP deeplink с кэшем; при ошибке оставляет последнюю успешную версию."""
-    global _routing_value, _routing_fetched_at
-    if not ROUTING_ENABLE or not ROUTING_URL:
-        return ""
-    now = time.time()
-    if _routing_value and now - _routing_fetched_at < ROUTING_TTL:
-        return _routing_value
-    with _routing_lock:
-        now = time.time()
-        if _routing_value and now - _routing_fetched_at < ROUTING_TTL:
-            return _routing_value
-        try:
-            req = urllib.request.Request(
-                ROUTING_URL,
-                headers={"User-Agent": "3X-UI-KIT-RoscomVPN/1.0", "Accept": "text/plain"},
-            )
-            with urllib.request.urlopen(req, timeout=4) as r:
-                if r.status != 200:
-                    raise OSError(f"HTTP {r.status}")
-                value = r.read(1024 * 1024).decode("utf-8", "strict").strip()
-            if not value.startswith("happ://routing/onadd/"):
-                raise ValueError("неверный формат routing deeplink")
-            _routing_value = value
-            _routing_fetched_at = now
-            return value
-        except (urllib.error.URLError, OSError, UnicodeError, ValueError) as e:
-            log(f"не удалось обновить HAPP routing: {e}")
-            return _routing_value
 
 
 def upstream(sub_id, ua, host, accept):
@@ -236,11 +195,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 v = fix_userinfo(headers[k]) if k == "subscription-userinfo" else headers[k]
                 if v:
                     self.send_header(k.title(), v)
-        if code == 200 and ROUTING_ENABLE:
-            rules = routing_rules()
-            self.send_header("Routing-Enable", "true")
-            if rules:
-                self.send_header("Routing", rules)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
