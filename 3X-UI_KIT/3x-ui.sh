@@ -427,6 +427,9 @@ setup_tls_cert() {
     local live="/etc/letsencrypt/live/$DOMAIN"
     if [[ ! -s "$live/fullchain.pem" || ! -s "$live/privkey.pem" ]]; then
       say "Выпускаю отдельный Let's Encrypt сертификат для ${B}$DOMAIN${N}"
+      if [[ $UFW == yes ]] && command -v ufw >/dev/null 2>&1; then
+        ufw allow 80/tcp >/dev/null 2>&1 || true
+      fi
       certbot certonly --standalone --non-interactive --agree-tos --register-unsafely-without-email \
         --cert-name "$DOMAIN" -d "$DOMAIN"
     else
@@ -881,7 +884,7 @@ HTML
 # Сгенерировано 3x-ui.sh (3X-UI KIT) — перезаписывается при повторном запуске.
 server {
     listen 127.0.0.1:${INNER[web]} ssl http2 proxy_protocol;
-    server_name _;
+    server_name ${DOMAIN:-_};
     ssl_certificate $CERT;
     ssl_certificate_key $KEY;
     ssl_protocols TLSv1.2 TLSv1.3;
