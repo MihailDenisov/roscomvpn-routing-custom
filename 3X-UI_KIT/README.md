@@ -97,3 +97,25 @@ https://example.com/
 
 При этом секретные пути панели/подписки и VPN-маршруты продолжают обслуживаться локально.
 Certbot renewal включается штатным systemd timer; после успешного продления Nginx автоматически перезагружается.
+
+
+## Команда `kit paths`
+
+После установки можно одной командой посмотреть служебные URL и пути:
+
+```bash
+kit paths
+```
+
+Пример вывода:
+
+```
+Panel URL:         https://connect.example.com/<panel-path>/
+Subscription base:https://connect.example.com/<sub-path>/
+Subscription path:/<sub-path>/
+Routing URL:       https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/HAPP/DEFAULT-CUSTOM.DEEPLINK
+Fallback:          https://example.com/
+Domain:            connect.example.com
+```
+
+Значения берутся из фактической установки сервера, а не захардкожены в CLI.
