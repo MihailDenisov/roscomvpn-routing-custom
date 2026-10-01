@@ -1,0 +1,11 @@
+{
+  "DirectSites": [
+    "domain:maicraft.tech",
+    "domain:vds.first-server.net",
+    "domain:mgr.hosting-minecraft.pro",
+    "domain:my.hosting-minecraft.pro"
+  ],
+  "DirectIp": [
+    "157.228.189.164/32"
+  ]
+}
