@@ -172,7 +172,7 @@ update_user() { # имя jq-фильтр [аргументы jq...]
   shift 2
   for e in $(emails_of "$name"); do
     rec=$(client "$e")
-    body=$(jq -c "$@" "{email, subId, totalGB, expiryTime, limitIp, enable, comment} | $filter" <<<"$rec")
+    body=$(jq -c "$@" "{email, subId, flow, totalGB, expiryTime, limitIp, enable, comment} | $filter" <<<"$rec")
     api POST "clients/update/$e" "$body" >/dev/null
   done
 }
