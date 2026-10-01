@@ -191,11 +191,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = text.encode()
         self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
-        if code == 200 and ROUTING_ENABLE:
-            rules = routing_rules()
-            self.send_header("Routing-Enable", "true")
-            if rules:
-                self.send_header("Routing", rules)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
@@ -241,6 +236,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 v = fix_userinfo(headers[k]) if k == "subscription-userinfo" else headers[k]
                 if v:
                     self.send_header(k.title(), v)
+        if code == 200 and ROUTING_ENABLE:
+            rules = routing_rules()
+            self.send_header("Routing-Enable", "true")
+            if rules:
+                self.send_header("Routing", rules)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
