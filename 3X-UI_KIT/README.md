@@ -59,3 +59,41 @@ systemctl restart kit-sub
 
 GitHub Actions пересобирает `HAPP/DEFAULT-CUSTOM.DEEPLINK` поверх свежего
 `hydraponique/roscomvpn-routing/HAPP/DEFAULT.JSON`.
+
+
+## Субдомен и fallback на обычный сайт
+
+Для отдельного субдомена можно использовать:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/3x-ui.sh) \
+  --domain connect.example.com \
+  --fallback-url https://example.com \
+  -y
+```
+
+Перед запуском A/AAAA-запись `connect.example.com` должна указывать на VPS.
+
+Установщик выпустит отдельный Let's Encrypt сертификат только для
+`connect.example.com` и сохранит его в:
+
+```
+/etc/letsencrypt/live/connect.example.com/
+```
+
+Существующие сертификаты `example.com` и `*.example.com` не изменяются и не копируются.
+
+Обычный браузерный запрос на:
+
+```
+https://connect.example.com/
+```
+
+получит HTTP 302 на:
+
+```
+https://example.com/
+```
+
+При этом секретные пути панели/подписки и VPN-маршруты продолжают обслуживаться локально.
+Certbot renewal включается штатным systemd timer; после успешного продления Nginx автоматически перезагружается.
