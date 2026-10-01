@@ -34,7 +34,7 @@ PROTOS=(); CREATED=(); OPEN=()
 # Режим «всё TCP на 443»: nginx разводит по SNI и путям, подключения слушают только localhost.
 SINGLE=no
 declare -A INNER=([reality]=10443 [xhttp]=10444 [mtproto]=10445 [web]=10446 [ws]=10451 [vmess]=10452 [trojan]=10453 [sub]=10460)
-SNI2=""; SNI3=""
+SNI2=""; SNI3=""; PANEL_UPSTREAM_SCHEME="http"
 
 if [[ -t 1 ]]; then
   G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; B=$'\e[1m'; D=$'\e[2m'; N=$'\e[0m'
@@ -274,7 +274,10 @@ main() {
   local scheme
   for scheme in https http; do
     API="$scheme://127.0.0.1:$XUI_PANEL_PORT/$XUI_WEB_BASE_PATH/panel/api"
-    curl -fsk -m 5 -o /dev/null -H "Authorization: Bearer $XUI_API_TOKEN" "$API/server/getNewUUID" 2>/dev/null && break
+    if curl -fsk -m 5 -o /dev/null -H "Authorization: Bearer $XUI_API_TOKEN" "$API/server/getNewUUID" 2>/dev/null; then
+      PANEL_UPSTREAM_SCHEME="$scheme"
+      break
+    fi
   done
   wait_panel
 
@@ -283,6 +286,7 @@ main() {
     /usr/local/x-ui/x-ui cert -webCert /root/cert/custom/fullchain.pem -webCertKey /root/cert/custom/privkey.pem >/dev/null 2>&1
     systemctl restart x-ui
     API="https://127.0.0.1:$XUI_PANEL_PORT/$XUI_WEB_BASE_PATH/panel/api"
+    PANEL_UPSTREAM_SCHEME="https"
     wait_panel
   fi
 
@@ -917,7 +921,7 @@ $locs
         proxy_set_header Host \$host;
     }
     location $panel_path {
-        proxy_pass https://127.0.0.1:$XUI_PANEL_PORT;
+        proxy_pass $PANEL_UPSTREAM_SCHEME://127.0.0.1:$XUI_PANEL_PORT;
         proxy_ssl_verify off;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
