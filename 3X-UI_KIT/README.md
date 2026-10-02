@@ -146,3 +146,130 @@ ss -lunp | grep ':8443 '
 ```
 
 Важно: если у VPS-провайдера есть отдельный cloud firewall/security group, `8443/udp` нужно открыть/закрыть и там отдельно.
+
+
+## RU relay без VPN-софта
+
+Для промежуточного сервера можно использовать обычный L3/L4 relay на `iptables`.
+На relay не ставятся 3x-ui, Xray, WireGuard, AmneziaWG, Hysteria или другие VPN/proxy-сервисы.
+
+Схема:
+
+```
+client -> ru.connect.example.com -> RU relay -> MAIN 3x-ui VPS
+```
+
+Relay прозрачно пересылает:
+
+```
+80/tcp    -> MAIN:80      Let's Encrypt HTTP-01
+443/tcp   -> MAIN:443     REALITY / XHTTP / MTProto / HTTPS / panel / subscription
+443/udp   -> MAIN:443     Hysteria2
+8443/udp  -> MAIN:8443    AmneziaWG 3.1
+8444/udp  -> MAIN:8444    TUIC
+```
+
+### 1. DNS
+
+Создайте A-запись:
+
+```
+ru.connect.example.com -> IPv4 RU relay
+```
+
+AAAA для relay не нужен, если используется IPv4-only режим.
+
+### 2. Настройка relay
+
+На RU VPS:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/setup-relay.sh) \
+  --main-ip MAIN_IPV4 \
+  --relay-domain ru.connect.example.com
+```
+
+Скрипт:
+
+- включает IPv4 forwarding;
+- отключает IPv6 по умолчанию;
+- создаёт отдельные idempotent iptables chains;
+- разрешает локально только SSH, loopback, ICMP и DHCP renew;
+- делает DNAT/SNAT/MASQUERADE для нужных TCP/UDP портов;
+- устанавливает systemd unit, который восстанавливает правила после перезагрузки.
+
+Если IPv6 на relay нужен, добавьте `--keep-ipv6`.
+
+У провайдера relay должны быть открыты:
+
+```
+SSH/tcp
+80/tcp
+443/tcp
+443/udp
+8443/udp
+8444/udp
+```
+
+### 3. Подготовка MAIN
+
+После того как `ru.connect.example.com` уже указывает на relay и relay пересылает `80/tcp` на MAIN:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/main-relay.sh) prepare \
+  --origin-domain connect.example.com \
+  --relay-domain ru.connect.example.com \
+  --relay-ip RELAY_IPV4
+```
+
+Режим `prepare` делает backup и расширяет существующий Let's Encrypt сертификат двумя SAN:
+
+```
+connect.example.com
+ru.connect.example.com
+```
+
+Сертификат остаётся только на MAIN; relay TLS не завершает.
+
+### 4. Переключение подписок и endpoint'ов
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/main-relay.sh) activate \
+  --origin-domain connect.example.com \
+  --relay-domain ru.connect.example.com \
+  --relay-ip RELAY_IPV4
+```
+
+Этот режим:
+
+- задаёт всем inbound `shareAddrStrategy=custom` и адрес relay;
+- меняет `externalProxy.dest` у SINGLE/TCP inbound'ов на relay;
+- меняет public subscription host на relay;
+- обновляет `/etc/kit/kit.env` и `kit-sub`.
+
+После этого обновите подписки на клиентах и проверьте REALITY, XHTTP, Hysteria2, TUIC и AmneziaWG 3.1.
+
+Проверка состояния:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/main-relay.sh) status \
+  --origin-domain connect.example.com \
+  --relay-domain ru.connect.example.com
+```
+
+### 5. Закрытие прямого доступа к MAIN
+
+Только после успешной проверки через relay:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/main-relay.sh) activate \
+  --origin-domain connect.example.com \
+  --relay-domain ru.connect.example.com \
+  --relay-ip RELAY_IPV4 \
+  --lockdown
+```
+
+`--lockdown` оставляет `80/tcp` MAIN доступным для Let's Encrypt, а `443/tcp`,
+`443/udp`, `8443/udp` и `8444/udp` разрешает только с IPv4 relay.
+
+Перед каждым изменением MAIN создаётся backup в `/root/kit-relay-backup/`.
