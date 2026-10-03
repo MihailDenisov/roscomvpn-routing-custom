@@ -217,7 +217,17 @@ activate() {
   sub_path=$(jq -r '.subPath // "/sub/"' <<<"$all")
   [[ $sub_path == /* ]] || sub_path="/$sub_path"
   sub_uri="https://$RELAY_DOMAIN$sub_path"
-  updated=$(jq -c --arg d "$RELAY_DOMAIN" --arg u "$sub_uri" '.subDomain=$d | .subURI=$u' <<<"$all")
+  local mihomo_rules_url="https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/MIHOMO/3x-ui-routing.yaml"
+  updated=$(jq -c \
+    --arg d "$RELAY_DOMAIN" \
+    --arg u "$sub_uri" \
+    --arg mr "$mihomo_rules_url" \
+    '.subDomain=$d
+     | .subURI=$u
+     | .subClashEnable=true
+     | .subClashAutoDetect=true
+     | .subClashEnableRouting=true
+     | .subClashRules=$mr' <<<"$all")
   api POST setting/update "$updated" >/dev/null
   systemctl restart x-ui
 
@@ -245,7 +255,8 @@ activate() {
   fi
 
   say "Subscription base is now: https://$RELAY_DOMAIN$sub_path"
-  say "Refresh client subscriptions and test REALITY/XHTTP/HY2/TUIC/AWG3 before enabling lockdown."
+  say "Mihomo routing: RoscomVPN + category-ads -> REJECT-DROP"
+  say "Refresh FlClash/Mihomo subscription to receive routing and ad filtering."
 }
 
 status() {
