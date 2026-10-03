@@ -175,7 +175,7 @@ update_inbounds() {
         elif (.streamSettings|type) == "string" and (.streamSettings|length) > 0 then
           .streamSettings = ((.streamSettings|fromjson)
             | if (.externalProxy|type) == "array" then .externalProxy |= map(.dest = $relay)
-              elif $id and . != null then . else . end
+              else . end
             | tojson)
           | if .protocol == "mtproto" then
               .streamSettings = ((.streamSettings|fromjson)
