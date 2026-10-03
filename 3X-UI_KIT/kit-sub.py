@@ -23,6 +23,7 @@ import ssl
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import yaml
@@ -79,6 +80,82 @@ def strip_links(body):
     lines = [l for l in text.splitlines() if l.strip() and not l.startswith(("vpn://", "tg://"))]
     out = "\n".join(lines)
     return base64.b64encode(out.encode()).decode().encode() if encoded else out.encode()
+
+
+RELAY_SCHEMES = {"vless", "trojan", "ss", "hysteria", "hysteria2", "tuic", "wireguard"}
+
+def _relay_host():
+    """Public endpoint advertised by kit-sub; never used as TLS SNI."""
+    return str(CONF.get("host", "")).strip().split(":", 1)[0]
+
+
+def _rewrite_uri_endpoint(line, relay):
+    """Replace only URI authority host. Query parameters (sni/host/pbk/path/...) stay intact."""
+    if not relay or "://" not in line:
+        return line
+    scheme = line.split("://", 1)[0].lower()
+    if scheme == "vmess":
+        try:
+            raw = line.split("://", 1)[1].strip()
+            obj = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)))
+            if isinstance(obj, dict) and obj.get("add"):
+                obj["add"] = relay
+                enc = base64.b64encode(json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode()).decode()
+                return "vmess://" + enc
+        except (ValueError, UnicodeError, json.JSONDecodeError):
+            return line
+        return line
+    if scheme not in RELAY_SCHEMES:
+        return line
+    try:
+        p = urllib.parse.urlsplit(line)
+        if not p.hostname:
+            return line
+        user = ""
+        if p.username is not None:
+            user = urllib.parse.quote(urllib.parse.unquote(p.username), safe="")
+            if p.password is not None:
+                user += ":" + urllib.parse.quote(urllib.parse.unquote(p.password), safe="")
+            user += "@"
+        port = f":{p.port}" if p.port else ""
+        netloc = f"{user}{relay}{port}"
+        return urllib.parse.urlunsplit((p.scheme, netloc, p.path, p.query, p.fragment))
+    except (ValueError, UnicodeError):
+        return line
+
+
+def rewrite_raw_endpoints(body):
+    """Force raw share-link destination to relay without changing SNI/TLS/Reality parameters."""
+    relay = _relay_host()
+    if not relay:
+        return body
+    text = body.decode("utf-8", "replace").strip()
+    encoded = "://" not in text
+    if encoded:
+        try:
+            text = base64.b64decode(text + "=" * (-len(text) % 4)).decode("utf-8", "replace")
+        except (ValueError, UnicodeError):
+            return body
+    out = "\n".join(_rewrite_uri_endpoint(line, relay) for line in text.splitlines())
+    return base64.b64encode(out.encode()) if encoded else out.encode()
+
+
+def rewrite_clash_endpoints(clash_yaml):
+    """Force only Clash/Mihomo proxy server fields to relay. SNI/servername remain untouched."""
+    relay = _relay_host()
+    if not relay:
+        return clash_yaml
+    cfg = yaml.safe_load(clash_yaml)
+    if not isinstance(cfg, dict):
+        return clash_yaml
+    types = {"vless", "vmess", "trojan", "ss", "hysteria", "hysteria2", "tuic", "wireguard"}
+    for p in cfg.get("proxies") or []:
+        if not isinstance(p, dict) or p.get("type") not in types:
+            continue
+        server = str(p.get("server", ""))
+        if server not in ("", "127.0.0.1", "::1", "localhost"):
+            p["server"] = relay
+    return yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False).encode()
 
 
 def strip_awg(clash_yaml):
@@ -178,14 +255,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         log(f"{ua[:80]!r} → {'clash+awg' if awg else 'clash' if clash else headers.get('content-type', '?').split(';')[0]}")
         try:
             if code == 200 and clash and not awg:
-                body = strip_awg(body)
+                body = rewrite_clash_endpoints(strip_awg(body))
             elif code == 200 and awg and not sub_id.endswith(("-awg", "-tg")):
                 # Установки до kit 1.1 держали AmneziaWG в подписке «<id>-awg» — подмешиваем её.
                 acode, _, abody = upstream(sub_id + "-awg", ua, host, accept)
                 if acode == 200 and abody:
                     body = merge_awg(body, abody)
+                body = rewrite_clash_endpoints(body)
+            elif code == 200 and clash:
+                body = rewrite_clash_endpoints(body)
             elif code == 200 and "text/plain" in headers.get("content-type", ""):
-                body = strip_links(body)
+                body = rewrite_raw_endpoints(strip_links(body))
         except (yaml.YAMLError, UnicodeError) as e:
             log(f"не удалось обработать подписку: {e}")
 
