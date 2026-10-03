@@ -169,9 +169,21 @@ update_inbounds() {
       | if (.streamSettings|type) == "object" then
           if (.streamSettings.externalProxy|type) == "array" then
             .streamSettings.externalProxy |= map(.dest = $relay)
+          elif .protocol == "mtproto" then
+            .streamSettings.externalProxy = [{forceTls:"same", dest:$relay, port:443, remark:""}]
           else . end
         elif (.streamSettings|type) == "string" and (.streamSettings|length) > 0 then
-          .streamSettings = ((.streamSettings|fromjson) | if (.externalProxy|type) == "array" then .externalProxy |= map(.dest = $relay) else . end | tojson)
+          .streamSettings = ((.streamSettings|fromjson)
+            | if (.externalProxy|type) == "array" then .externalProxy |= map(.dest = $relay)
+              elif $id and . != null then . else . end
+            | tojson)
+          | if .protocol == "mtproto" then
+              .streamSettings = ((.streamSettings|fromjson)
+                | if (.externalProxy|type) == "array" then . else .externalProxy=[{forceTls:"same",dest:$relay,port:443,remark:""}] end
+                | tojson)
+            else . end
+        elif .protocol == "mtproto" then
+          .streamSettings = ({externalProxy:[{forceTls:"same",dest:$relay,port:443,remark:""}]}|tojson)
         else . end
     ' <<<"$list")
     api POST "inbounds/update/$id" "$payload" >/dev/null
@@ -214,6 +226,14 @@ activate() {
     jq --arg h "$RELAY_DOMAIN" '.host=$h' /etc/kit-sub/config.json >/etc/kit-sub/config.json.tmp
     install -m 600 /etc/kit-sub/config.json.tmp /etc/kit-sub/config.json
     rm -f /etc/kit-sub/config.json.tmp
+    # Always refresh the public subscription shim: it enforces relay endpoint
+    # addresses while deliberately preserving SNI/Reality/TLS parameters.
+    if [[ -d /usr/local/lib/kit-sub ]]; then
+      curl -fsSL --retry 3 \
+        https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/kit-sub.py \
+        -o /usr/local/lib/kit-sub/kit_sub.py
+      python3 -m py_compile /usr/local/lib/kit-sub/kit_sub.py
+    fi
     systemctl restart kit-sub || true
   fi
 
