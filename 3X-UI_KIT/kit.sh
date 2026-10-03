@@ -117,7 +117,7 @@ cmd_add() {
   [[ $ids != "[]" ]] || die "На сервере нет подключений."
   sid=$(rand_id)
   body=$(jq -nc --arg e "$name" --arg s "$sid" --argjson t "$(gb_bytes "$gb")" --argjson x "$(days_ms "$days")" \
-    --argjson ip "$devices" --argjson ids "$ids" '{client: {email: $e, subId: $s, totalGB: $t, expiryTime: $x,
+    --argjson ip "$devices" --argjson ids "$ids" '{client: {email: $e, subId: $s, flow: "xtls-rprx-vision", totalGB: $t, expiryTime: $x,
     limitIp: $ip, enable: true, comment: "kit"}, inboundIds: $ids}')
   api POST clients/add "$body" >/dev/null
   awg_attach "$name" "$sid" "$(gb_bytes "$gb")" "$(days_ms "$days")" "$devices"
@@ -175,6 +175,19 @@ update_user() { # имя jq-фильтр [аргументы jq...]
     body=$(jq -c "$@" "{email, subId, flow, totalGB, expiryTime, limitIp, enable, comment} | $filter" <<<"$rec")
     api POST "clients/update/$e" "$body" >/dev/null
   done
+}
+
+cmd_repair() {
+  local name=${1:-} e rec body
+  valid_name "$name"
+  [[ -n $(client "$name") ]] || die "Нет пользователя $name"
+  for e in $(emails_of "$name"); do
+    rec=$(client "$e")
+    body=$(jq -c '{email, subId, flow, totalGB, expiryTime, limitIp, enable, comment}
+      | .flow = "xtls-rprx-vision"' <<<"$rec")
+    api POST "clients/update/$e" "$body" >/dev/null
+  done
+  say "Для $name восстановлен flow xtls-rprx-vision. Обновите подписку в клиенте."
 }
 
 cmd_limit() {
@@ -256,6 +269,7 @@ ${B}kit${N} — управление 3X-UI KIT
   kit user list                                           трафик, срок, статус
   kit user link имя [--all]                               подписка и QR; --all — ещё vpn:// и tg://
   kit user limit имя [--gb N] [--days N] [--devices N]    изменить лимиты (0 — без ограничений)
+  kit user repair имя                                      восстановить REALITY flow у старого пользователя
   kit user off имя  /  kit user on имя                    выключить и включить
   kit user del имя                                        удалить
 EOF
@@ -267,6 +281,7 @@ case "${1:-} ${2:-}" in
   "user list") cmd_list ;;
   "user link") shift 2; cmd_link "$@" ;;
   "user limit") shift 2; cmd_limit "$@" ;;
+  "user repair") shift 2; cmd_repair "$@" ;;
   "user off") cmd_toggle "${3:-}" false ;;
   "user on") cmd_toggle "${3:-}" true ;;
   "user del") shift 2; cmd_del "$@" ;;
