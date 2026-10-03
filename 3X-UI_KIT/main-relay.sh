@@ -168,13 +168,13 @@ update_inbounds() {
       | .shareAddr = $relay
       | if (.streamSettings|type) == "object" then
           if (.streamSettings.externalProxy|type) == "array" then
-            .streamSettings.externalProxy |= map(.dest = $relay)
+            .streamSettings.externalProxy |= map(.dest = $relay | if $id == 7 then .port = 443 else . end)
           elif .protocol == "mtproto" then
             .streamSettings.externalProxy = [{forceTls:"same", dest:$relay, port:443, remark:""}]
           else . end
         elif (.streamSettings|type) == "string" and (.streamSettings|length) > 0 then
           .streamSettings = ((.streamSettings|fromjson)
-            | if (.externalProxy|type) == "array" then .externalProxy |= map(.dest = $relay)
+            | if (.externalProxy|type) == "array" then .externalProxy |= map(.dest = $relay | if $id == 7 then .port = 443 else . end)
               else . end
             | tojson)
           | if .protocol == "mtproto" then
