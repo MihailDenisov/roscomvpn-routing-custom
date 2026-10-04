@@ -923,6 +923,12 @@ $locs
     location $SUB_PATH {
         proxy_pass http://127.0.0.1:${INNER[sub]};
         proxy_set_header Host \$host;
+        add_header Cache-Control "no-store, no-cache, must-revalidate, private" always;
+        add_header Pragma "no-cache" always;
+        add_header Expires "0" always;
+        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header X-Content-Type-Options "nosniff" always;
     }
     location $panel_path {
         proxy_pass $PANEL_UPSTREAM_SCHEME://127.0.0.1:$XUI_PANEL_PORT;
