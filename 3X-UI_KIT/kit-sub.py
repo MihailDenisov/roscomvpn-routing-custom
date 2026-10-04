@@ -30,6 +30,7 @@ import yaml
 
 CONFIG = os.environ.get("KIT_SUB_CONFIG", "/etc/kit-sub/config.json")
 CLASH_UA = re.compile(r"clash|mihomo|flclash|stash|nyanpasu|meta", re.I)
+HAPP_UA = re.compile(r"happ", re.I)
 # AmneziaWG добавляем только приложениям на ядре Mihomo. Karing, Hiddify и другие на sing-box
 # тоже могут просить формат Clash (Karing так и делает), но AmneziaWG не умеют.
 NO_AWG_UA = re.compile(r"karing|hiddify|nekobox|sing-?box|husi|stash|shadowrocket|v2box|streisand|happ|loon|surge|quantumult", re.I)
@@ -80,6 +81,110 @@ def strip_links(body):
     lines = [l for l in text.splitlines() if l.strip() and not l.startswith(("vpn://", "tg://"))]
     out = "\n".join(lines)
     return base64.b64encode(out.encode()).decode().encode() if encoded else out.encode()
+
+
+def _decode_raw_lines(body):
+    """Decode 3x-ui raw subscription (plain or base64) and return non-empty lines."""
+    text = body.decode("utf-8", "replace").strip()
+    if not text:
+        return []
+    if "://" not in text:
+        try:
+            text = base64.b64decode(text + "=" * (-len(text) % 4)).decode("utf-8", "replace")
+        except (ValueError, UnicodeError):
+            return []
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _telegram_public_link(line):
+    """Normalize one tg:// link to the public relay endpoint on TCP/443."""
+    if not line.startswith("tg://proxy?"):
+        return ""
+    relay = _relay_host()
+    if not relay:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(line)
+        params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        out = []
+        seen_server = seen_port = False
+        for key, value in params:
+            if key == "server":
+                value = relay
+                seen_server = True
+            elif key == "port":
+                value = "443"
+                seen_port = True
+            out.append((key, value))
+        if not seen_server:
+            out.append(("server", relay))
+        if not seen_port:
+            out.append(("port", "443"))
+        return "tg://proxy?" + urllib.parse.urlencode(out)
+    except (ValueError, UnicodeError):
+        return ""
+
+
+def telegram_link_for_sub(sub_id, host):
+    """Read the current per-user MTProto link from 3x-ui; do not persist its secret."""
+    code, _, body = upstream(sub_id, "v2rayN/7.0", host, "text/plain")
+    if code != 200:
+        return ""
+    for line in _decode_raw_lines(body):
+        link = _telegram_public_link(line)
+        if link:
+            return link
+    # Legacy KIT could keep MTProto under <subId>-tg.
+    code, _, body = upstream(sub_id + "-tg", "v2rayN/7.0", host, "text/plain")
+    if code == 200:
+        for line in _decode_raw_lines(body):
+            link = _telegram_public_link(line)
+            if link:
+                return link
+    return ""
+
+
+def telegram_http_url(sub_id):
+    host = _relay_host()
+    if not host:
+        return ""
+    return f"https://{host}{PATH}{urllib.parse.quote(sub_id, safe='')}/tg"
+
+
+def add_happ_telegram_info(body, sub_id):
+    """Prepend a harmless SOCKS info node whose remark contains the HTTPS Telegram launcher."""
+    url = telegram_http_url(sub_id)
+    if not url:
+        return body
+    text = body.decode("utf-8", "replace").strip()
+    encoded = "://" not in text
+    if encoded:
+        try:
+            text = base64.b64decode(text + "=" * (-len(text) % 4)).decode("utf-8", "replace")
+        except (ValueError, UnicodeError):
+            return body
+    remark = urllib.parse.quote(f"📨 Telegram MTProto: {url}", safe="")
+    info = f"socks://127.0.0.1:1080#{remark}"
+    lines = [line for line in text.splitlines() if line.strip()]
+    if info not in lines:
+        lines.insert(0, info)
+    out = "\n".join(lines)
+    return base64.b64encode(out.encode()) if encoded else out.encode()
+
+
+def add_clash_telegram_info(clash_yaml, sub_id):
+    """Add a display-only Mihomo group. It is not referenced by routing and cannot proxy traffic."""
+    url = telegram_http_url(sub_id)
+    if not url:
+        return clash_yaml
+    cfg = yaml.safe_load(clash_yaml)
+    if not isinstance(cfg, dict):
+        return clash_yaml
+    name = f"📨 Telegram: {url}"
+    groups = cfg.setdefault("proxy-groups", [])
+    if not any(isinstance(g, dict) and g.get("name") == name for g in groups):
+        groups.insert(0, {"name": name, "type": "select", "proxies": ["DIRECT"]})
+    return yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False).encode()
 
 
 RELAY_SCHEMES = {"vless", "trojan", "ss", "hysteria", "hysteria2", "tuic", "wireguard"}
@@ -239,12 +344,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if not path.startswith(PATH):
             return self.send_plain(404, "404 page not found")
-        sub_id = path[len(PATH):]
+        tail = path[len(PATH):]
+        telegram_request = tail.endswith("/tg")
+        sub_id = tail[:-3] if telegram_request else tail
         if not SUB_ID.match(sub_id):
             return self.send_plain(404, "404 page not found")
         ua = self.headers.get("User-Agent", "")
         host = self.headers.get("Host", CONF.get("host", ""))
         accept = self.headers.get("Accept", "")
+
+        if telegram_request:
+            link = telegram_link_for_sub(sub_id, host)
+            if not link:
+                return self.send_plain(404, "Telegram proxy is not available")
+            self.send_response(302)
+            self.send_header("Location", link)
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
         code, headers, body = upstream(sub_id, ua, host, accept)
         if code is None:
             return self.send_plain(502, "subscription backend is unavailable")
@@ -255,17 +376,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         log(f"{ua[:80]!r} → {'clash+awg' if awg else 'clash' if clash else headers.get('content-type', '?').split(';')[0]}")
         try:
             if code == 200 and clash and not awg:
-                body = rewrite_clash_endpoints(strip_awg(body))
+                body = add_clash_telegram_info(rewrite_clash_endpoints(strip_awg(body)), sub_id)
             elif code == 200 and awg and not sub_id.endswith(("-awg", "-tg")):
                 # Установки до kit 1.1 держали AmneziaWG в подписке «<id>-awg» — подмешиваем её.
                 acode, _, abody = upstream(sub_id + "-awg", ua, host, accept)
                 if acode == 200 and abody:
                     body = merge_awg(body, abody)
-                body = rewrite_clash_endpoints(body)
+                body = add_clash_telegram_info(rewrite_clash_endpoints(body), sub_id)
             elif code == 200 and clash:
-                body = rewrite_clash_endpoints(body)
+                body = add_clash_telegram_info(rewrite_clash_endpoints(body), sub_id)
             elif code == 200 and "text/plain" in headers.get("content-type", ""):
                 body = rewrite_raw_endpoints(strip_links(body))
+                if HAPP_UA.search(ua):
+                    body = add_happ_telegram_info(body, sub_id)
         except (yaml.YAMLError, UnicodeError) as e:
             log(f"не удалось обработать подписку: {e}")
 
