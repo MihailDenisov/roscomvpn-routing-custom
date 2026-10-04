@@ -164,25 +164,24 @@ update_inbounds() {
   while read -r id; do
     payload=$(jq -c --argjson id "$id" --arg relay "$RELAY_DOMAIN" '
       .[] | select(.id == $id)
+      | (.protocol == "mtproto") as $is_mtproto
       | .shareAddrStrategy = "custom"
       | .shareAddr = $relay
       | if (.streamSettings|type) == "object" then
           if (.streamSettings.externalProxy|type) == "array" then
-            .streamSettings.externalProxy |= map(.dest = $relay | if $id == 7 then .port = 443 else . end)
-          elif .protocol == "mtproto" then
+            .streamSettings.externalProxy |= map(.dest = $relay | if $is_mtproto then .port = 443 else . end)
+          elif $is_mtproto then
             .streamSettings.externalProxy = [{forceTls:"same", dest:$relay, port:443, remark:""}]
           else . end
         elif (.streamSettings|type) == "string" and (.streamSettings|length) > 0 then
           .streamSettings = ((.streamSettings|fromjson)
-            | if (.externalProxy|type) == "array" then .externalProxy |= map(.dest = $relay | if $id == 7 then .port = 443 else . end)
+            | if (.externalProxy|type) == "array" then
+                .externalProxy |= map(.dest = $relay | if $is_mtproto then .port = 443 else . end)
+              elif $is_mtproto then
+                .externalProxy = [{forceTls:"same",dest:$relay,port:443,remark:""}]
               else . end
             | tojson)
-          | if .protocol == "mtproto" then
-              .streamSettings = ((.streamSettings|fromjson)
-                | if (.externalProxy|type) == "array" then . else .externalProxy=[{forceTls:"same",dest:$relay,port:443,remark:""}] end
-                | tojson)
-            else . end
-        elif .protocol == "mtproto" then
+        elif $is_mtproto then
           .streamSettings = ({externalProxy:[{forceTls:"same",dest:$relay,port:443,remark:""}]}|tojson)
         else . end
     ' <<<"$list")
