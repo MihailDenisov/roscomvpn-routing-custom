@@ -273,7 +273,10 @@ activate() {
   curl -fsSL --retry 3 \
     https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/sub-theme/index.html \
     -o "$sub_theme_dir/index.html"
-  chmod 644 "$sub_theme_dir/index.html"
+  curl -fsSL --retry 3 \
+    https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js \
+    -o "$sub_theme_dir/qrcode.js"
+  chmod 644 "$sub_theme_dir/index.html" "$sub_theme_dir/qrcode.js"
   say "3x-ui profile page: built-in URL + custom KIT subscription theme"
 
   updated=$(jq -c \
