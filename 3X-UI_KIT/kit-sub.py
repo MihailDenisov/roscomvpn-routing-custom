@@ -19,6 +19,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import ssl
 import threading
 import time
@@ -47,9 +48,12 @@ def log(msg):
     print(msg, flush=True)
 
 
-def upstream(sub_id, ua, host, accept):
+def upstream(sub_id, ua, host, accept, query=""):
     """GET к подписке 3X-UI. Возвращает (код, заголовки, тело) или (None, {}, b"")."""
-    req = urllib.request.Request(CONF["upstream"].rstrip("/") + PATH + sub_id, headers={
+    url = CONF["upstream"].rstrip("/") + PATH + sub_id
+    if query:
+        url += "?" + query
+    req = urllib.request.Request(url, headers={
         "User-Agent": ua, "Host": host, "Accept": accept or "*/*"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
@@ -59,6 +63,42 @@ def upstream(sub_id, ua, host, accept):
     except (urllib.error.URLError, OSError, socket.timeout) as e:
         log(f"upstream недоступен: {e}")
         return None, {}, b""
+
+
+def client_reset_info(sub_id):
+    """Read only non-secret traffic reset metadata for the subscription owner."""
+    db_path = str(CONF.get("xui_db", "/etc/x-ui/x-ui.db"))
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+        try:
+            row = con.execute(
+                "SELECT COALESCE(traffic_reset,'never'), COALESCE(traffic_reset_day,1) "
+                "FROM clients WHERE sub_id=? LIMIT 1",
+                (sub_id,),
+            ).fetchone()
+        finally:
+            con.close()
+        if not row:
+            return {"trafficReset": "never", "trafficResetDay": 1}
+        cycle = str(row[0] or "never").lower()
+        if cycle not in {"never", "hourly", "daily", "weekly", "monthly"}:
+            cycle = "never"
+        day = int(row[1] or 1)
+        return {"trafficReset": cycle, "trafficResetDay": max(1, min(day, 31))}
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return {"trafficReset": "never", "trafficResetDay": 1}
+
+
+def augment_info_json(body, sub_id):
+    """Add KIT-only reset metadata to 3x-ui's ?format=info response."""
+    try:
+        obj = json.loads(body.decode("utf-8"))
+        if not isinstance(obj, dict):
+            return body
+        obj.update(client_reset_info(sub_id))
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (UnicodeError, json.JSONDecodeError):
+        return body
 
 
 def fix_userinfo(value):
@@ -236,7 +276,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        parsed_request = urllib.parse.urlsplit(self.path)
+        path = parsed_request.path
+        query = parsed_request.query
         if not path.startswith(PATH):
             return self.send_plain(404, "404 page not found")
         sub_id = path[len(PATH):]
@@ -245,7 +287,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         ua = self.headers.get("User-Agent", "")
         host = self.headers.get("Host", CONF.get("host", ""))
         accept = self.headers.get("Accept", "")
-        code, headers, body = upstream(sub_id, ua, host, accept)
+        code, headers, body = upstream(sub_id, ua, host, accept, query)
         if code is None:
             return self.send_plain(502, "subscription backend is unavailable")
 
@@ -254,6 +296,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # В журнал — только приложение и что ему отдали, без IP.
         log(f"{ua[:80]!r} → {'clash+awg' if awg else 'clash' if clash else headers.get('content-type', '?').split(';')[0]}")
         try:
+            if code == 200 and urllib.parse.parse_qs(query).get("format", [""])[0].lower() == "info" \
+                    and "application/json" in headers.get("content-type", ""):
+                body = augment_info_json(body, sub_id)
             if code == 200 and clash and not awg:
                 body = rewrite_clash_endpoints(strip_awg(body))
             elif code == 200 and awg and not sub_id.endswith(("-awg", "-tg")):
