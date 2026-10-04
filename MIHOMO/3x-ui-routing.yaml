@@ -269,6 +269,15 @@ rule-providers:
     interval: 86400
 
 rules:
+  # Maicraft Minecraft: keep game/auth infrastructure outside the VPN.
+  # VPN endpoint IPs are intentionally excluded.
+  - DOMAIN-SUFFIX,maicraft.tech,DIRECT
+  - DOMAIN-SUFFIX,joinserver.xyz,DIRECT
+  - IP-CIDR,157.228.189.164/32,DIRECT,no-resolve
+  - IP-CIDR,37.18.21.245/32,DIRECT,no-resolve
+  - IP-CIDR,213.152.43.22/32,DIRECT,no-resolve
+  - IP-CIDR,213.152.43.251/32,DIRECT,no-resolve
+  - IP-CIDR,95.165.89.44/32,DIRECT,no-resolve
   - RULE-SET,private-ips,DIRECT,no-resolve
   - IP-CIDR,::/0,REJECT-DROP,no-resolve
   - AND,((NETWORK,UDP),(DST-PORT,443)),REJECT-DROP
