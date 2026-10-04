@@ -197,18 +197,16 @@ ensure_mtproto_relay_host() {
     groups=$(api GET "hosts/byInbound/$id")
     gid=$(jq -r '.[] | select(.remark == "KIT relay MTProto") | .groupId' <<<"$groups" | head -n1)
     if [[ -n $gid ]]; then
-      payload=$(jq -c --arg relay "$RELAY_DOMAIN" --argjson id "$id" '
-        .[] | select(.groupId == $gid)
-      ' --arg gid "$gid" <<<"$groups" 2>/dev/null || true)
       # Preserve all supported host-group fields while forcing only the public endpoint.
-      payload=$(jq -c --arg relay "$RELAY_DOMAIN" --argjson id "$id" '
-        .inboundIds=[$id]
+      payload=$(jq -c --arg gid "$gid" --arg relay "$RELAY_DOMAIN" --argjson id "$id" '
+        .[] | select(.groupId == $gid)
+        | .inboundIds=[$id]
         | .remark="KIT relay MTProto"
         | .hosts=[$relay]
         | .port=443
         | .security="same"
         | .isDisabled=false
-      ' <<<"$payload")
+      ' <<<"$groups")
       api POST "hosts/update/$gid" "$payload" >/dev/null
     else
       payload=$(jq -nc --arg relay "$RELAY_DOMAIN" --argjson id "$id" '{
