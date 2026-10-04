@@ -190,14 +190,30 @@ update_inbounds() {
 }
 
 ensure_mtproto_relay_host() {
-  local list id groups gid payload
+  local list id groups gid payload old_gid remaining
   list=$(api GET inbounds/list)
   while read -r id; do
     [[ -n $id ]] || continue
     groups=$(api GET "hosts/byInbound/$id")
     gid=$(jq -r '.[] | select(.remark == "KIT relay MTProto") | .groupId' <<<"$groups" | head -n1)
+
+    # MTProto share links are generated from Host groups. A legacy host with port=0
+    # inherits the inbound's local listener port (e.g. 10445), producing a second,
+    # unusable public link. Detach this MTProto inbound from every non-canonical
+    # group; delete a group only when it belongs exclusively to this inbound.
+    while read -r old_gid; do
+      [[ -n $old_gid && $old_gid != "$gid" ]] || continue
+      payload=$(jq -c --arg gid "$old_gid" '.[] | select(.groupId == $gid)' <<<"$groups")
+      remaining=$(jq -c --argjson id "$id" '[.inboundIds[] | select(. != $id)]' <<<"$payload")
+      if [[ $remaining == "[]" ]]; then
+        api POST "hosts/del/$old_gid" '{}' >/dev/null
+      else
+        payload=$(jq -c --argjson ids "$remaining" '.inboundIds=$ids' <<<"$payload")
+        api POST "hosts/update/$old_gid" "$payload" >/dev/null
+      fi
+    done < <(jq -r '.[].groupId' <<<"$groups")
+
     if [[ -n $gid ]]; then
-      # Preserve all supported host-group fields while forcing only the public endpoint.
       payload=$(jq -c --arg gid "$gid" --arg relay "$RELAY_DOMAIN" --argjson id "$id" '
         .[] | select(.groupId == $gid)
         | .inboundIds=[$id]
