@@ -48,7 +48,7 @@ button,a.button{border:0;border-radius:9px;padding:10px 14px;background:CanvasTe
         <div class="value link-value">{{$link}}</div>
         <p>
           <button type="button" onclick="copyLink(this)">Копировать</button>
-          <a class="button open-link" href="{{$link}}" style="display:none">Открыть</a>
+          <a class="button open-link" href="#" style="display:none">Открыть</a>
         </p>
       </div>
       {{end}}
@@ -79,7 +79,7 @@ document.querySelectorAll('.link-card').forEach(card=>{
   badge.textContent=schemeOf(raw);
   if(raw.startsWith('tg://')){
     badge.textContent='Telegram MTProto';
-    const a=card.querySelector('.open-link');a.style.display='inline-block';a.textContent='Открыть в Telegram';
+    const a=card.querySelector('.open-link');a.href=raw;a.style.display='inline-block';a.textContent='Открыть в Telegram';
   } else if(raw.startsWith('vpn://')){
     badge.textContent='AmneziaVPN';
   }
