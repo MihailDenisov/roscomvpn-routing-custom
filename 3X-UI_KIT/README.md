@@ -1,275 +1,371 @@
 # 3X-UI_KIT + RoscomVPN routing
 
-Кастомизированный установщик поверх
+Кастомизированный набор скриптов поверх
 [itsnotkubrick/3X-UI_KIT](https://github.com/itsnotkubrick/3X-UI_KIT).
 
-Он не заменяет 3x-ui на сторонний форк: по-прежнему ставится официальный
-`MHSanaei/3x-ui v3.8.5`, как в upstream KIT.
+Репозиторий не требует отдельного форка панели: используется официальный 3x-ui, а дополнительная логика находится в shell/Python-скриптах вокруг него.
 
-## Что изменено
+> Все примеры ниже используют тестовые домены и адреса. Никогда не публикуйте production IP, домены, UUID, секреты, API-токены, subscription ID и пользовательские данные в документации.
 
-1. В настройках подписки автоматически включается штатный HAPP routing:
-   - `subEnableRouting = true`
-   - `subRoutingRules = https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/HAPP/DEFAULT-CUSTOM.DEEPLINK`
-2. Официальный 3x-ui сам обновляет удалённые правила и хранит последнее валидное значение.
-3. `kit-sub.py` пропускает наружу заголовки `Routing-Enable` и `Routing`.
-4. Все остальные функции оригинального 3X-UI_KIT сохранены.
+## Компоненты
 
-Это аналогично механизму RoscomVPN в `hydraponique/3x-ui`, но без замены официальной панели.
+| Файл | Назначение |
+|---|---|
+| `3x-ui.sh` | установка/настройка 3x-ui и набора inbound'ов |
+| `kit.sh` | CLI для управления пользователями |
+| `kit-sub.py` | публичный subscription shim перед 3x-ui |
+| `setup-relay.sh` | L3/L4 relay на отдельном VPS |
+| `main-relay.sh` | переключение MAIN на работу через relay |
+| `install-routing-addon.sh` | подключение routing к существующей установке |
 
-## Установка нового сервера
+## Поддерживаемые протоколы
+
+Типовая конфигурация может включать:
+
+```text
+REALITY / VLESS
+XHTTP
+Hysteria2
+Trojan
+TUIC
+AmneziaWG 3.x
+MTProto
+```
+
+Конкретный набор задаётся установщику через `--protocols`.
+
+## Установка MAIN
+
+Базовая установка:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/3x-ui.sh)
 ```
 
-Все параметры оригинального установщика поддерживаются, например:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/3x-ui.sh) --protocols reality,xhttp,hy2,awg3 -y
-```
-
-## Уже установленный 3X-UI_KIT
-
-В панели 3x-ui откройте настройки подписки / HAPP routing и задайте:
-
-```
-Enable routing: ON
-Routing rules:
-https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/HAPP/DEFAULT-CUSTOM.DEEPLINK
-```
-
-Если наружная подписка идёт через `kit-sub`, дополнительно замените его на версию из этого репозитория:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/kit-sub.py \
-  -o /usr/local/lib/kit-sub/kit_sub.py
-systemctl restart kit-sub
-```
-
-## Кастомные DIRECT-правила
-
-Правила хранятся в корневом `custom-direct.json`. Сейчас там:
-
-- `domain:maicraft.tech`
-- `domain:vds.first-server.net`
-- `domain:mgr.hosting-minecraft.pro`
-- `domain:my.hosting-minecraft.pro`
-- `157.228.189.164/32`
-
-GitHub Actions пересобирает `HAPP/DEFAULT-CUSTOM.DEEPLINK` поверх свежего
-`hydraponique/roscomvpn-routing/HAPP/DEFAULT.JSON`.
-
-
-## Субдомен и fallback на обычный сайт
-
-Для отдельного субдомена можно использовать:
+Пример с выбранными протоколами:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/3x-ui.sh) \
-  --domain connect.example.com \
-  --fallback-url https://example.com \
+  --protocols reality,xhttp,hy2,trojan,tuic,awg3,mtproto \
   -y
 ```
 
-Перед запуском A/AAAA-запись `connect.example.com` должна указывать на VPS.
+Пример установки на отдельный VPN-домен с fallback-сайтом:
 
-Установщик выпустит отдельный Let's Encrypt сертификат только для
-`connect.example.com` и сохранит его в:
-
-```
-/etc/letsencrypt/live/connect.example.com/
-```
-
-Существующие сертификаты `example.com` и `*.example.com` не изменяются и не копируются.
-
-Обычный браузерный запрос на:
-
-```
-https://connect.example.com/
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/3x-ui.sh) \
+  --domain vpn.example.com \
+  --fallback-url https://www.example.com \
+  -y
 ```
 
-получит HTTP 302 на:
+До запуска A-запись `vpn.example.com` должна указывать на MAIN VPS.
 
+## Routing
+
+### HAPP
+
+В 3x-ui включается штатный HAPP routing:
+
+```text
+subEnableRouting = true
+subRoutingRules = https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/HAPP/DEFAULT-CUSTOM.DEEPLINK
 ```
-https://example.com/
+
+`kit-sub.py` пропускает наружу заголовки `Routing-Enable` и `Routing`.
+
+### Mihomo / FlClash
+
+Для Clash/Mihomo включаются:
+
+```text
+subClashEnable = true
+subClashAutoDetect = true
+subClashEnableRouting = true
+subClashRules = https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/MIHOMO/3x-ui-routing.yaml
 ```
 
-При этом секретные пути панели/подписки и VPN-маршруты продолжают обслуживаться локально.
-Certbot renewal включается штатным systemd timer; после успешного продления Nginx автоматически перезагружается.
+3x-ui генерирует VPN-ноды, а удалённый YAML добавляет только:
 
+- `proxy-groups`;
+- `rule-providers`;
+- `rules`.
 
-## Команда `kit paths`
+В routing включена блокировка рекламных доменов через `category-ads -> REJECT-DROP`.
 
-После установки можно одной командой посмотреть служебные URL и пути:
+## Управление пользователями
+
+### Создать пользователя
+
+```bash
+kit user add USERNAME
+```
+
+С лимитами:
+
+```bash
+kit user add USERNAME --gb 50 --days 30 --devices 3
+```
+
+Значение `0` означает «без ограничения».
+
+### Список пользователей
+
+```bash
+kit user list
+```
+
+### Subscription URL
+
+```bash
+kit user link USERNAME
+```
+
+### Дополнительные ссылки
+
+```bash
+kit user link USERNAME --all
+```
+
+Команда также выводит поддерживаемые отдельные ссылки `vpn://` и `tg://`.
+
+В SINGLE-режиме MTProto всегда должен публиковаться через внешний TCP/443, даже если внутренний inbound слушает другой порт.
+
+### Изменить лимиты
+
+```bash
+kit user limit USERNAME --gb 100 --days 60 --devices 2
+```
+
+### Включить / выключить
+
+```bash
+kit user off USERNAME
+kit user on USERNAME
+```
+
+### Удалить
+
+```bash
+kit user del USERNAME
+```
+
+### Восстановить REALITY flow старому пользователю
+
+```bash
+kit user repair USERNAME
+```
+
+## Служебные URL
 
 ```bash
 kit paths
 ```
 
-Пример вывода:
+Пример:
 
-```
-Panel URL:         https://connect.example.com/<panel-path>/
-Subscription base:https://connect.example.com/<sub-path>/
-Subscription path:/<sub-path>/
-Routing URL:       https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/HAPP/DEFAULT-CUSTOM.DEEPLINK
-Fallback:          https://example.com/
-Domain:            connect.example.com
-```
-
-Значения берутся из фактической установки сервера, а не захардкожены в CLI.
-
-
-## AmneziaWG 3.1: порт закрыт по умолчанию
-
-AmneziaWG 3.1 использует `8443/udp`, но установщик **не открывает этот порт в UFW автоматически**.
-Inbound создаётся и остаётся готовым как резервный транспорт.
-
-Открыть при необходимости:
-
-```bash
-ufw allow 8443/udp
+```text
+Panel URL:          https://vpn.example.com/<panel-path>/
+Subscription base: https://vpn.example.com/<subscription-path>/
+Subscription path: /<subscription-path>/
+Routing URL:        https://raw.githubusercontent.com/.../HAPP/DEFAULT-CUSTOM.DEEPLINK
+Fallback:           https://www.example.com/
+Domain:             vpn.example.com
 ```
 
-Закрыть обратно:
+Не публикуйте реальный вывод `kit paths`, если в нём есть секретный путь панели или другие чувствительные данные.
 
-```bash
-ufw delete allow 8443/udp
+## Архитектура с relay
+
+Рекомендуемая схема:
+
+```text
+Client
+  ↓
+entry.example.com
+  ↓
+L3/L4 relay
+  ↓
+MAIN 3x-ui VPS
+  ↓
+Internet
 ```
 
-Проверить:
+Relay не завершает TLS и не запускает Xray/3x-ui. Он только делает DNAT/SNAT/MASQUERADE.
 
-```bash
-ufw status
-ss -lunp | grep ':8443 '
+Типовые пробросы:
+
+```text
+80/tcp    -> MAIN:80
+443/tcp   -> MAIN:443
+443/udp   -> MAIN:443
+8443/udp  -> MAIN:8443
+8444/udp  -> MAIN:8444
 ```
 
-Важно: если у VPS-провайдера есть отдельный cloud firewall/security group, `8443/udp` нужно открыть/закрыть и там отдельно.
+В SINGLE-конфигурации TCP/443 может одновременно обслуживать REALITY, XHTTP, MTProto, HTTPS, панель и подписку через SNI/stream routing на MAIN.
 
-
-## RU relay без VPN-софта
-
-Для промежуточного сервера можно использовать обычный L3/L4 relay на `iptables`.
-На relay не ставятся 3x-ui, Xray, WireGuard, AmneziaWG, Hysteria или другие VPN/proxy-сервисы.
-
-Схема:
-
-```
-client -> ru.connect.example.com -> RU relay -> MAIN 3x-ui VPS
-```
-
-Relay прозрачно пересылает:
-
-```
-80/tcp    -> MAIN:80      Let's Encrypt HTTP-01
-443/tcp   -> MAIN:443     REALITY / XHTTP / MTProto / HTTPS / panel / subscription
-443/udp   -> MAIN:443     Hysteria2
-8443/udp  -> MAIN:8443    AmneziaWG 3.1
-8444/udp  -> MAIN:8444    TUIC
-```
-
-### 1. DNS
+## Настройка relay
 
 Создайте A-запись:
 
+```text
+entry.example.com -> RELAY_IPV4
 ```
-ru.connect.example.com -> IPv4 RU relay
-```
 
-AAAA для relay не нужен, если используется IPv4-only режим.
-
-### 2. Настройка relay
-
-На RU VPS:
+Затем на relay VPS:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/setup-relay.sh) \
   --main-ip MAIN_IPV4 \
-  --relay-domain ru.connect.example.com
+  --relay-domain entry.example.com
 ```
 
 Скрипт:
 
 - включает IPv4 forwarding;
-- отключает IPv6 по умолчанию;
+- по умолчанию отключает IPv6;
 - создаёт отдельные idempotent iptables chains;
-- разрешает локально только SSH, loopback, ICMP и DHCP renew;
-- делает DNAT/SNAT/MASQUERADE для нужных TCP/UDP портов;
-- устанавливает systemd unit, который восстанавливает правила после перезагрузки.
+- разрешает локально только необходимый минимум;
+- делает DNAT/SNAT/MASQUERADE;
+- устанавливает systemd unit для восстановления правил после reboot.
 
-Если IPv6 на relay нужен, добавьте `--keep-ipv6`.
+Если IPv6 нужен:
 
-У провайдера relay должны быть открыты:
-
-```
-SSH/tcp
-80/tcp
-443/tcp
-443/udp
-8443/udp
-8444/udp
+```bash
+... --keep-ipv6
 ```
 
-### 3. Подготовка MAIN
+У cloud firewall/security group relay должны быть разрешены только реально используемые входящие порты.
 
-После того как `ru.connect.example.com` уже указывает на relay и relay пересылает `80/tcp` на MAIN:
+## Подготовка MAIN к relay
+
+После того как DNS relay уже указывает на relay VPS и `80/tcp` корректно пересылается на MAIN:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/main-relay.sh) prepare \
-  --origin-domain connect.example.com \
-  --relay-domain ru.connect.example.com \
+  --origin-domain vpn.example.com \
+  --relay-domain entry.example.com \
   --relay-ip RELAY_IPV4
 ```
 
-Режим `prepare` делает backup и расширяет существующий Let's Encrypt сертификат двумя SAN:
+`prepare`:
 
-```
-connect.example.com
-ru.connect.example.com
-```
+- создаёт backup;
+- расширяет существующий Let's Encrypt сертификат нужными SAN;
+- обновляет nginx;
+- оставляет TLS termination на MAIN.
 
-Сертификат остаётся только на MAIN; relay TLS не завершает.
-
-### 4. Переключение подписок и endpoint'ов
+## Активация relay
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/main-relay.sh) activate \
-  --origin-domain connect.example.com \
-  --relay-domain ru.connect.example.com \
+  --origin-domain vpn.example.com \
+  --relay-domain entry.example.com \
   --relay-ip RELAY_IPV4
 ```
 
-Этот режим:
+`activate`:
 
-- задаёт всем inbound `shareAddrStrategy=custom` и адрес relay;
-- меняет `externalProxy.dest` у SINGLE/TCP inbound'ов на relay;
-- меняет public subscription host на relay;
-- обновляет `/etc/kit/kit.env` и `kit-sub`.
+- переводит public share/subscription endpoints на relay domain;
+- обновляет `externalProxy.dest`;
+- для MTProto фиксирует внешний порт `443`;
+- обновляет `/etc/kit/kit.env`;
+- обновляет `kit-sub.py`;
+- включает Mihomo routing и ad blocking через 3x-ui.
 
-После этого обновите подписки на клиентах и проверьте REALITY, XHTTP, Hysteria2, TUIC и AmneziaWG 3.1.
+После активации обновите subscription на тестовом клиенте и проверьте все используемые протоколы.
 
-Проверка состояния:
+## Проверка
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/main-relay.sh) status \
-  --origin-domain connect.example.com \
-  --relay-domain ru.connect.example.com
+  --origin-domain vpn.example.com \
+  --relay-domain entry.example.com
 ```
 
-### 5. Закрытие прямого доступа к MAIN
+Проверьте также:
 
-Только после успешной проверки через relay:
+```bash
+ufw status numbered
+ss -lntup
+```
+
+## Lockdown MAIN
+
+Только после успешного теста через relay:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/main-relay.sh) activate \
-  --origin-domain connect.example.com \
-  --relay-domain ru.connect.example.com \
+  --origin-domain vpn.example.com \
+  --relay-domain entry.example.com \
   --relay-ip RELAY_IPV4 \
   --lockdown
 ```
 
-`--lockdown` оставляет `80/tcp` MAIN доступным для Let's Encrypt, а `443/tcp`,
-`443/udp`, `8443/udp` и `8444/udp` разрешает только с IPv4 relay.
+В текущей схеме lockdown оставляет `80/tcp` доступным для Let's Encrypt, а VPN-порты разрешает только от relay IPv4.
 
-Перед каждым изменением MAIN создаётся backup в `/root/kit-relay-backup/`.
+Перед изменениями MAIN создаётся backup в:
+
+```text
+/root/kit-relay-backup/
+```
+
+## AmneziaWG
+
+Типовая установка использует UDP-порт `8443`.
+
+Если порт намеренно закрыт UFW и нужен прямой доступ без relay:
+
+```bash
+ufw allow 8443/udp
+```
+
+При relay+lockdown прямой публичный доступ к этому порту на MAIN обычно не нужен.
+
+## Подписка и безопасность
+
+Subscription URL является bearer-secret: любой, кто её получил, потенциально может скачать пользовательские конфиги.
+
+Рекомендуется:
+
+- только HTTPS;
+- длинный случайный `subId`;
+- не публиковать URL;
+- не логировать полный subscription URL;
+- `Cache-Control: no-store`;
+- `X-Robots-Tag: noindex, nofollow, noarchive`;
+- rate limit на subscription endpoint;
+- возможность ротации subscription ID при утечке.
+
+Не путайте subscription URL с URL панели: секретный путь панели и panel credentials не должны передаваться обычным пользователям.
+
+## SSH hardening
+
+Минимальный набор для MAIN и relay:
+
+- вход только по SSH-ключам;
+- `PasswordAuthentication no`;
+- `KbdInteractiveAuthentication no`;
+- `PermitRootLogin prohibit-password`;
+- проверить эффективные параметры через `sshd -T`;
+- настроить Fail2ban так, чтобы его chain реально стоял до разрешающего SSH-правила;
+- включить unattended security updates.
+
+Не отключайте парольный вход, пока не проверили вход по ключу во второй SSH-сессии.
+
+## Проверка публичных endpoint'ов
+
+После любых изменений убедитесь, что пользовательские ссылки содержат только публичный relay endpoint:
+
+```bash
+kit user link USERNAME --all
+```
+
+Для MTProto ожидается:
+
+```text
+tg://proxy?server=entry.example.com&port=443&secret=...
+```
+
+В subscription/Clash YAML не должны появляться внутренние IP MAIN, localhost-адреса или внутренние listener-порты.
