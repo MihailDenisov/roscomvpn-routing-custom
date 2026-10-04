@@ -48,6 +48,7 @@ summary::-webkit-details-marker{display:none}summary::after{content:"⌄";color:
 .link-value{max-height:84px;overflow:auto}.mini-details{margin-top:10px}.mini-details summary{padding:9px 11px;font-size:13px}
 .notice{font-size:12px;color:var(--muted);text-align:center;padding:4px 10px}
 .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:var(--soft);border:1px solid var(--line);font-size:12px;color:var(--muted)}
+.security-warning{margin:0 0 12px;padding:12px 13px;border:1px solid color-mix(in srgb,var(--warn) 45%,var(--line));border-radius:12px;background:color-mix(in srgb,var(--warn) 10%,var(--card));font-size:13px}
 @media(max-width:620px){.shell{padding-top:20px}.hero h1{font-size:24px}.secret{display:block}.secret .btn{width:100%;margin-top:8px}.status-grid{grid-template-columns:1fr}.actions .btn{flex:1}}
 </style>
 </head>
@@ -61,6 +62,7 @@ summary::-webkit-details-marker{display:none}summary::after{content:"⌄";color:
   <div class="stack">
     <section class="card">
       <div class="card-head"><div class="icon">🔗</div><div><h2>Подписка</h2><div class="muted">Одна ссылка для HAPP, FlClash и других клиентов</div></div></div>
+      <div class="security-warning"><b>⚠️ Это секретная персональная ссылка.</b><br>Не передавайте URL подписки, отдельные конфигурации или QR-коды третьим лицам. Любой, кто получит такую ссылку, сможет использовать ваши VPN-учётные данные до их смены.</div>
       <div class="secret">
         <div class="value" id="sub-url">{{.subUrl}}</div>
         <button class="btn" type="button" onclick="copyText('sub-url',this)">Копировать</button>
