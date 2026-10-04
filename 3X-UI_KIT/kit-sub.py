@@ -30,7 +30,6 @@ import yaml
 
 CONFIG = os.environ.get("KIT_SUB_CONFIG", "/etc/kit-sub/config.json")
 CLASH_UA = re.compile(r"clash|mihomo|flclash|stash|nyanpasu|meta", re.I)
-HAPP_UA = re.compile(r"happ", re.I)
 # AmneziaWG добавляем только приложениям на ядре Mihomo. Karing, Hiddify и другие на sing-box
 # тоже могут просить формат Clash (Karing так и делает), но AmneziaWG не умеют.
 NO_AWG_UA = re.compile(r"karing|hiddify|nekobox|sing-?box|husi|stash|shadowrocket|v2box|streisand|happ|loon|surge|quantumult", re.I)
@@ -128,13 +127,11 @@ def _telegram_public_link(line):
 def telegram_link_for_sub(sub_id, host):
     """Read the current per-user MTProto link from 3x-ui; do not persist its secret."""
     code, _, body = upstream(sub_id, "v2rayN/7.0", host, "text/plain")
-    if code != 200:
-        return ""
-    for line in _decode_raw_lines(body):
-        link = _telegram_public_link(line)
-        if link:
-            return link
-    # Legacy KIT could keep MTProto under <subId>-tg.
+    if code == 200:
+        for line in _decode_raw_lines(body):
+            link = _telegram_public_link(line)
+            if link:
+                return link
     code, _, body = upstream(sub_id + "-tg", "v2rayN/7.0", host, "text/plain")
     if code == 200:
         for line in _decode_raw_lines(body):
@@ -144,47 +141,67 @@ def telegram_link_for_sub(sub_id, host):
     return ""
 
 
-def telegram_http_url(sub_id):
+def subscription_public_url(sub_id):
     host = _relay_host()
     if not host:
         return ""
-    return f"https://{host}{PATH}{urllib.parse.quote(sub_id, safe='')}/tg"
+    return f"https://{host}{PATH}{urllib.parse.quote(sub_id, safe='')}"
 
 
-def add_happ_telegram_info(body, sub_id):
-    """Prepend a harmless SOCKS info node whose remark contains the HTTPS Telegram launcher."""
-    url = telegram_http_url(sub_id)
-    if not url:
-        return body
-    text = body.decode("utf-8", "replace").strip()
-    encoded = "://" not in text
-    if encoded:
-        try:
-            text = base64.b64decode(text + "=" * (-len(text) % 4)).decode("utf-8", "replace")
-        except (ValueError, UnicodeError):
-            return body
-    remark = urllib.parse.quote(f"📨 Telegram MTProto: {url}", safe="")
-    info = f"socks://127.0.0.1:1080#{remark}"
-    lines = [line for line in text.splitlines() if line.strip()]
-    if info not in lines:
-        lines.insert(0, info)
-    out = "\n".join(lines)
-    return base64.b64encode(out.encode()) if encoded else out.encode()
-
-
-def add_clash_telegram_info(clash_yaml, sub_id):
-    """Add a display-only Mihomo group. It is not referenced by routing and cannot proxy traffic."""
-    url = telegram_http_url(sub_id)
-    if not url:
-        return clash_yaml
-    cfg = yaml.safe_load(clash_yaml)
-    if not isinstance(cfg, dict):
-        return clash_yaml
-    name = f"📨 Telegram: {url}"
-    groups = cfg.setdefault("proxy-groups", [])
-    if not any(isinstance(g, dict) and g.get("name") == name for g in groups):
-        groups.insert(0, {"name": name, "type": "select", "proxies": ["DIRECT"]})
-    return yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False).encode()
+def render_user_page(sub_id, host):
+    """Personal subscription page. Secrets are read on demand from 3x-ui and never persisted here."""
+    sub_url = subscription_public_url(sub_id)
+    tg_link = telegram_link_for_sub(sub_id, host)
+    def esc(value):
+        return (value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    .replace('"', "&quot;").replace("'", "&#39;"))
+    sub_e = esc(sub_url)
+    tg_e = esc(tg_link)
+    tg_block = ""
+    if tg_link:
+        tg_block = f"""
+        <section class="card">
+          <h2>Telegram MTProto</h2>
+          <p class="muted">Персональная ссылка для Telegram.</p>
+          <div class="row"><input id="tg" readonly value="{tg_e}"><button onclick="copyText('tg', this)">Копировать</button></div>
+          <p><a class="button secondary" href="{tg_e}">Открыть в Telegram</a></p>
+        </section>"""
+    html = f"""<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow,noarchive">
+<title>VPN subscription</title>
+<style>
+body{{font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:40px auto;padding:0 18px;background:#f6f7f9;color:#17191c}}
+h1{{font-size:28px}} h2{{font-size:20px;margin-top:0}}
+.card{{background:#fff;border:1px solid #ddd;border-radius:14px;padding:20px;margin:16px 0}}
+.row{{display:flex;gap:8px}} input{{flex:1;min-width:0;padding:11px;border:1px solid #bbb;border-radius:9px;font:inherit}}
+button,.button{{display:inline-block;padding:11px 15px;border:0;border-radius:9px;background:#17191c;color:white;text-decoration:none;cursor:pointer;font:inherit}}
+.secondary{{background:#3b3f46}} .muted{{color:#666}} .warn{{font-size:14px;color:#666}}
+@media(max-width:560px){{.row{{display:block}} input,button{{width:100%;box-sizing:border-box}} button{{margin-top:8px}}}}
+</style>
+</head>
+<body>
+<h1>Подключение VPN</h1>
+<section class="card">
+  <h2>Подписка</h2>
+  <p class="muted">Добавьте эту ссылку в HAPP, FlClash или другой поддерживаемый клиент.</p>
+  <div class="row"><input id="sub" readonly value="{sub_e}"><button onclick="copyText('sub', this)">Копировать</button></div>
+</section>
+{tg_block}
+<p class="warn">Ссылки на этой странице являются персональными. Не передавайте их другим людям.</p>
+<script>
+async function copyText(id, btn) {{
+  const el=document.getElementById(id);
+  try {{ await navigator.clipboard.writeText(el.value); }}
+  catch(e) {{ el.select(); document.execCommand('copy'); }}
+  const old=btn.textContent; btn.textContent='Скопировано'; setTimeout(()=>btn.textContent=old,1200);
+}}
+</script>
+</body></html>"""
+    return html.encode("utf-8")
 
 
 RELAY_SCHEMES = {"vless", "trojan", "ss", "hysteria", "hysteria2", "tuic", "wireguard"}
@@ -345,13 +362,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not path.startswith(PATH):
             return self.send_plain(404, "404 page not found")
         tail = path[len(PATH):]
+        page_request = tail.endswith("/page")
         telegram_request = tail.endswith("/tg")
-        sub_id = tail[:-3] if telegram_request else tail
+        sub_id = tail[:-5] if page_request else (tail[:-3] if telegram_request else tail)
         if not SUB_ID.match(sub_id):
             return self.send_plain(404, "404 page not found")
         ua = self.headers.get("User-Agent", "")
         host = self.headers.get("Host", CONF.get("host", ""))
         accept = self.headers.get("Accept", "")
+
+        if page_request:
+            body = render_user_page(sub_id, host)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+            return
 
         if telegram_request:
             link = telegram_link_for_sub(sub_id, host)
@@ -361,7 +393,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Location", link)
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, private")
             self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
+            self.send_header("X-Robots-Tag", "noindex, nofollow,noarchive")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
@@ -376,19 +408,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         log(f"{ua[:80]!r} → {'clash+awg' if awg else 'clash' if clash else headers.get('content-type', '?').split(';')[0]}")
         try:
             if code == 200 and clash and not awg:
-                body = add_clash_telegram_info(rewrite_clash_endpoints(strip_awg(body)), sub_id)
+                body = rewrite_clash_endpoints(strip_awg(body))
             elif code == 200 and awg and not sub_id.endswith(("-awg", "-tg")):
                 # Установки до kit 1.1 держали AmneziaWG в подписке «<id>-awg» — подмешиваем её.
                 acode, _, abody = upstream(sub_id + "-awg", ua, host, accept)
                 if acode == 200 and abody:
                     body = merge_awg(body, abody)
-                body = add_clash_telegram_info(rewrite_clash_endpoints(body), sub_id)
+                body = rewrite_clash_endpoints(body)
             elif code == 200 and clash:
-                body = add_clash_telegram_info(rewrite_clash_endpoints(body), sub_id)
+                body = rewrite_clash_endpoints(body)
             elif code == 200 and "text/plain" in headers.get("content-type", ""):
                 body = rewrite_raw_endpoints(strip_links(body))
-                if HAPP_UA.search(ua):
-                    body = add_happ_telegram_info(body, sub_id)
         except (yaml.YAMLError, UnicodeError) as e:
             log(f"не удалось обработать подписку: {e}")
 
