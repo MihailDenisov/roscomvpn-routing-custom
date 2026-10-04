@@ -96,6 +96,9 @@ show_link() { # имя subId
   echo
   echo "$url"
   echo
+  echo "Персональная страница:"
+  echo "${url%/}/page"
+  echo
   command -v qrencode >/dev/null && qrencode -t ANSIUTF8 -m 1 "$url"
   echo "${D}AmneziaVPN и Telegram: kit user link $1 --all — отдельные ссылки vpn:// и tg://${N}"
 }
