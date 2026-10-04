@@ -148,7 +148,11 @@ function makeQr(target,raw){
     const qr=qrcode(0,'L'); qr.addData(raw); qr.make();
     target.innerHTML=qr.createSvgTag({cellSize:4,margin:12,scalable:true});
   }catch(e){
-    target.innerHTML='<div class="qr-error">Ссылка слишком длинная для QR-кода. Используйте кнопку «Копировать».</div>';
+    console.error('QR generation failed', e);
+    const msg = (typeof qrcode === 'undefined')
+      ? 'QR-модуль не загрузился. Обновите страницу и попробуйте снова.'
+      : 'Не удалось создать QR-код для этой ссылки. Используйте кнопку «Копировать».';
+    target.innerHTML='<div class="qr-error">'+msg+'</div>';
   }
 }
 function toggleQr(id,raw,btn){
