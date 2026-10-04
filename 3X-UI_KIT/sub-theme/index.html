@@ -173,9 +173,13 @@ function fmtLast(ts){ts=Number(ts||0);return ts>0?new Date(ts).toLocaleString():
 function applyStatus(info){
   const card=document.getElementById('status-card');
   const enabled=info&&typeof info.enabled!=='undefined'?info.enabled:card.dataset.enabled==='true';
-  const online=info&&typeof info.isOnline!=='undefined'?info.isOnline:card.dataset.online==='true';
+  const liveOnline=info&&typeof info.isOnline!=='undefined'?info.isOnline:card.dataset.online==='true';
   const expire=info&&typeof info.expire!=='undefined'?info.expire:card.dataset.expire;
-  const last=info&&typeof info.lastOnline!=='undefined'?info.lastOnline:card.dataset.lastOnline;
+  const last=Number(info&&typeof info.lastOnline!=='undefined'?info.lastOnline:card.dataset.lastOnline)||0;
+  // 3x-ui's live online set uses a 20s grace window. HTTP polling can land on
+  // its boundary, so treat a client seen within the last 30s as online too.
+  const recentlyOnline=last>0 && (Date.now()-last)<30000;
+  const online=liveOnline || recentlyOnline;
   const up=info&&typeof info.uploadByte!=='undefined'?info.uploadByte:card.dataset.up;
   const down=info&&typeof info.downloadByte!=='undefined'?info.downloadByte:card.dataset.down;
   const total=info&&typeof info.totalByte!=='undefined'?info.totalByte:card.dataset.total;
@@ -198,7 +202,7 @@ async function refreshStatus(){
     if(r.ok) applyStatus(await r.json());
   }catch(e){}
 }
-setInterval(refreshStatus,15000);
+setInterval(refreshStatus,5000);
 
 const linksBox=document.getElementById('links-box');
 const visible=[];
