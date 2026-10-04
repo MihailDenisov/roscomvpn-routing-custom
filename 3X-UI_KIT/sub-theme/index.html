@@ -43,7 +43,7 @@ button,a.button{border:0;border-radius:9px;padding:10px 14px;background:CanvasTe
     <h2>Отдельные ссылки</h2>
     <div class="links">
       {{range $i, $link := .links}}
-      <div class="link-card" data-link="{{$link}}">
+      <div class="link-card" data-link="{{$link}}" style="display:none">
         <div class="badge">конфигурация</div>
         <div class="value link-value">{{$link}}</div>
         <p>
@@ -75,13 +75,30 @@ function copyText(id,btn){copyRaw(document.getElementById(id).textContent.trim()
 function copyLink(btn){const card=btn.closest('.link-card');copyRaw(card.dataset.link,btn)}
 document.querySelectorAll('.link-card').forEach(card=>{
   const raw=card.dataset.link||'';
+  const lower=raw.toLowerCase();
+  const show =
+    lower.startsWith('tg://') ||
+    lower.startsWith('tuic://') ||
+    lower.startsWith('vpn://') ||
+    lower.startsWith('wireguard://');
+  if(!show) return;
+
+  card.style.display='';
   const badge=card.querySelector('.badge');
   badge.textContent=schemeOf(raw);
-  if(raw.startsWith('tg://')){
+
+  if(lower.startsWith('tg://')){
     badge.textContent='Telegram MTProto';
-    const a=card.querySelector('.open-link');a.href=raw;a.style.display='inline-block';a.textContent='Открыть в Telegram';
-  } else if(raw.startsWith('vpn://')){
+    const a=card.querySelector('.open-link');
+    a.href=raw;
+    a.style.display='inline-block';
+    a.textContent='Открыть в Telegram';
+  } else if(lower.startsWith('tuic://')){
+    badge.textContent='TUIC';
+  } else if(lower.startsWith('vpn://')){
     badge.textContent='AmneziaVPN';
+  } else if(lower.startsWith('wireguard://')){
+    badge.textContent='AmneziaWG';
   }
 });
 const exp=document.getElementById('expire');const ts=Number(exp.dataset.expire||0);
