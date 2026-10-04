@@ -295,6 +295,40 @@ activate() {
   api POST setting/update "$updated" >/dev/null
   systemctl restart x-ui
 
+  # Harden public subscription/profile responses. The subscription URL is a bearer secret.
+  if [[ -f /etc/nginx/conf.d/kit.conf ]]; then
+    python3 - "$sub_path" <<'PY'
+from pathlib import Path
+import re, sys
+p = Path("/etc/nginx/conf.d/kit.conf")
+sub_path = sys.argv[1]
+text = p.read_text()
+pattern = re.compile(r'(location\s+' + re.escape(sub_path) + r'\s*\{.*?proxy_set_header\s+Host\s+\$host;)(.*?\n\s*\})', re.S)
+m = pattern.search(text)
+if not m:
+    raise SystemExit(0)
+head = m.group(1)
+tail = m.group(2)
+headers = '''
+        add_header Cache-Control "no-store, no-cache, must-revalidate, private" always;
+        add_header Pragma "no-cache" always;
+        add_header Expires "0" always;
+        add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header X-Content-Type-Options "nosniff" always;'''
+block = head
+for line in headers.strip("\n").splitlines():
+    key = line.strip().split(" ", 2)[1] if line.strip().startswith("add_header ") else ""
+    if key and re.search(r'(?m)^\s*add_header\s+' + re.escape(key) + r'\b', m.group(0)):
+        continue
+    block += "\n" + line
+block += tail
+p.write_text(text[:m.start()] + block + text[m.end():])
+PY
+    nginx -t >/dev/null
+    systemctl reload nginx
+  fi
+
   update_kit_env "$sub_path"
   if [[ -f /etc/kit-sub/config.json ]]; then
     jq --arg h "$RELAY_DOMAIN" '.host=$h' /etc/kit-sub/config.json >/etc/kit-sub/config.json.tmp
