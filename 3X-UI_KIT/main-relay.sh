@@ -268,16 +268,27 @@ activate() {
   [[ $sub_path == /* ]] || sub_path="/$sub_path"
   sub_uri="https://$RELAY_DOMAIN$sub_path"
   local mihomo_rules_url="https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/MIHOMO/3x-ui-routing.yaml"
+  local sub_theme_dir="/etc/3x-ui/sub_templates/kit"
+  install -d -m 755 "$sub_theme_dir"
+  curl -fsSL --retry 3 \
+    https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/sub-theme/index.html \
+    -o "$sub_theme_dir/index.html"
+  chmod 644 "$sub_theme_dir/index.html"
+  say "3x-ui profile page: built-in URL + custom KIT subscription theme"
+
   updated=$(jq -c \
     --arg d "$RELAY_DOMAIN" \
     --arg u "$sub_uri" \
     --arg mr "$mihomo_rules_url" \
+    --arg td "$sub_theme_dir" \
     '.subDomain=$d
      | .subURI=$u
      | .subClashEnable=true
      | .subClashAutoDetect=true
      | .subClashEnableRouting=true
-     | .subClashRules=$mr' <<<"$all")
+     | .subClashRules=$mr
+     | .subProfileMode="builtin"
+     | .subThemeDir=$td' <<<"$all")
   api POST setting/update "$updated" >/dev/null
   systemctl restart x-ui
 
