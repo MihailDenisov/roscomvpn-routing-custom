@@ -377,7 +377,7 @@ main() {
   [[ -n $extra ]] && links+=$'\n'"$extra"
   AWG_LINKS=$(grep '^vpn://' <<<"$links" || true)
   # MTProto слушает localhost, а клиенты приходят через nginx на 443.
-  [[ $SINGLE == yes ]] && links=$(sed "s/^\(tg:\/\/proxy?\)\(.*\)port=${INNER[mtproto]}/\1\2port=443/" <<<"$links")
+  [[ $SINGLE == yes ]] && links=$(sed -E '/^tg:\/\/proxy\?/ s/([?&]port=)[0-9]+/\\1443/' <<<"$links")
   umask 077
   {
     echo "3X-UI KIT (3X-UI $XUI_VERSION) — данные для входа (файл виден только root)"
@@ -710,8 +710,12 @@ proto_mtproto() {
   local settings
   if [[ $SINGLE == yes ]]; then
     # FakeTLS-домен — свой сайт: nginx узнаёт MTProto по нему и передаёт mtg с реальным IP клиента.
+    # Сам inbound слушает localhost:10445, но share-link панели должен сразу рекламировать
+    # публичный HOST:443. externalProxy используется только для генерации публичной ссылки.
     settings=$(jq -nc --arg d "$SNI3" --argjson c "$(client_base mtproto)" '{fakeTlsDomain: $d, proxyProtocolListener: true, clients: [$c + {secret: ""}]}')
-    add_inbound "MTProto" "${INNER[mtproto]}" inner mtproto "$settings" '{}'
+    local stream
+    stream=$(jq -nc --argjson e "$(ext_proxy same)" '{externalProxy: $e}')
+    add_inbound "MTProto" "${INNER[mtproto]}" inner mtproto "$settings" "$stream"
   else
     settings=$(jq -nc --argjson c "$(client_base mtproto)" '{fakeTlsDomain: "www.cloudflare.com", clients: [$c + {secret: ""}]}')
     add_inbound "MTProto" "${PORTS[mtproto]}" tcp mtproto "$settings" '{}'
