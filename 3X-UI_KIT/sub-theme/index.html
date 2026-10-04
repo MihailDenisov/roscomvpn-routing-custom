@@ -73,17 +73,22 @@ function copyRaw(raw,btn){
 function ok(btn){const old=btn.textContent;btn.textContent='Скопировано';setTimeout(()=>btn.textContent=old,1200)}
 function copyText(id,btn){copyRaw(document.getElementById(id).textContent.trim(),btn)}
 function copyLink(btn){const card=btn.closest('.link-card');copyRaw(card.dataset.link,btn)}
+const linksBox=document.querySelector('.links');
+const visibleCards=[];
 document.querySelectorAll('.link-card').forEach(card=>{
   const raw=card.dataset.link||'';
   const lower=raw.toLowerCase();
-  const show =
-    lower.startsWith('tg://') ||
-    lower.startsWith('tuic://') ||
-    lower.startsWith('vpn://') ||
-    lower.startsWith('wireguard://');
-  if(!show) return;
+  let order=99;
+
+  if(lower.startsWith('tg://')) order=1;
+  else if(lower.startsWith('vpn://') || lower.startsWith('wireguard://')) order=2;
+  else if(lower.startsWith('tuic://')) order=3;
+  else return;
 
   card.style.display='';
+  card.dataset.order=String(order);
+  visibleCards.push(card);
+
   const badge=card.querySelector('.badge');
   badge.textContent=schemeOf(raw);
 
@@ -93,14 +98,17 @@ document.querySelectorAll('.link-card').forEach(card=>{
     a.href=raw;
     a.style.display='inline-block';
     a.textContent='Открыть в Telegram';
-  } else if(lower.startsWith('tuic://')){
-    badge.textContent='TUIC';
   } else if(lower.startsWith('vpn://')){
     badge.textContent='AmneziaVPN';
   } else if(lower.startsWith('wireguard://')){
     badge.textContent='AmneziaWG';
+  } else if(lower.startsWith('tuic://')){
+    badge.textContent='TUIC';
   }
 });
+visibleCards
+  .sort((a,b)=>Number(a.dataset.order)-Number(b.dataset.order))
+  .forEach(card=>linksBox.appendChild(card));
 const exp=document.getElementById('expire');const ts=Number(exp.dataset.expire||0);
 exp.textContent=ts>0?'Срок: '+new Date(ts*1000).toLocaleString():'Срок: без ограничения';
 </script>
