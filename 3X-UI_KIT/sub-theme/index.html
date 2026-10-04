@@ -4,113 +4,223 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow,noarchive">
+<meta name="referrer" content="no-referrer">
 <title>{{if .subTitle}}{{.subTitle}}{{else}}VPN profile{{end}}</title>
 <style>
-:root{color-scheme:light dark}
-body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:860px;margin:40px auto;padding:0 18px;line-height:1.45}
-h1{font-size:28px;margin-bottom:8px}h2{font-size:20px;margin:0 0 10px}
-.grid{display:grid;gap:14px}.card{border:1px solid #8885;border-radius:14px;padding:18px;background:color-mix(in srgb,Canvas 96%,CanvasText 4%)}
-.row{display:flex;gap:8px;align-items:center}.value{flex:1;min-width:0;padding:10px;border:1px solid #8887;border-radius:9px;background:Canvas;overflow-wrap:anywhere}
-button,a.button{border:0;border-radius:9px;padding:10px 14px;background:CanvasText;color:Canvas;text-decoration:none;cursor:pointer;font:inherit;display:inline-block}
-.muted{opacity:.7}.small{font-size:13px}.links{display:grid;gap:10px}.link-card{border:1px solid #8884;border-radius:10px;padding:12px}
-.badge{display:inline-block;padding:3px 8px;border-radius:999px;background:#8883;font-size:12px;margin-bottom:6px}
-@media(max-width:620px){.row{display:block}.row button{width:100%;margin-top:8px}.value{box-sizing:border-box;width:100%}}
+:root{
+  color-scheme:light dark;
+  --bg:#f4f6f8;--card:#fff;--text:#18202a;--muted:#657180;--line:#dfe4ea;
+  --soft:#f7f9fb;--accent:#2563eb;--accent2:#1d4ed8;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;
+  --shadow:0 10px 30px rgba(17,24,39,.06)
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#0f141a;--card:#171d24;--text:#edf2f7;--muted:#9ba8b5;--line:#2a3440;
+  --soft:#11171d;--accent:#60a5fa;--accent2:#93c5fd;--shadow:0 10px 30px rgba(0,0,0,.18)
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.shell{max-width:820px;margin:0 auto;padding:28px 16px 56px}
+.hero{padding:6px 2px 18px}.hero h1{font-size:28px;line-height:1.2;margin:0 0 7px}.muted{color:var(--muted)}
+.stack{display:grid;gap:14px}.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;box-shadow:var(--shadow)}
+.card-head{display:flex;align-items:center;gap:12px;margin-bottom:14px}.card-head h2{font-size:18px;margin:0}.icon{
+  width:38px;height:38px;border-radius:11px;background:var(--soft);display:grid;place-items:center;
+  font-size:19px;border:1px solid var(--line);flex:none
+}
+.secret{display:flex;gap:8px;align-items:stretch}.value{
+  flex:1;min-width:0;background:var(--soft);border:1px solid var(--line);border-radius:11px;
+  padding:11px 12px;overflow-wrap:anywhere;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace
+}
+.btn{appearance:none;border:0;border-radius:11px;padding:10px 14px;background:var(--accent);color:white;font:600 14px/1.2 system-ui;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.btn:hover{background:var(--accent2)}.btn.secondary{background:var(--soft);color:var(--text);border:1px solid var(--line)}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+details{border:1px solid var(--line);border-radius:13px;background:var(--soft);overflow:hidden}
+summary{cursor:pointer;padding:12px 14px;font-weight:650;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px}
+summary::-webkit-details-marker{display:none}summary::after{content:"⌄";color:var(--muted);font-size:18px;transition:.2s}details[open]>summary::after{transform:rotate(180deg)}
+.details-body{padding:0 14px 14px}.qr-box{display:grid;place-items:center;background:white;border-radius:14px;padding:14px;margin-top:4px;overflow:auto}
+.qr-box svg{max-width:100%;height:auto}.qr-error{color:var(--bad);text-align:center;padding:12px}
+.status-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.metric{padding:13px;border:1px solid var(--line);border-radius:13px;background:var(--soft)}
+.metric .k{font-size:12px;color:var(--muted);margin-bottom:3px}.metric .v{font-size:16px;font-weight:700}.online{color:var(--ok)}.offline{color:var(--muted)}.disabled{color:var(--bad)}
+.progress{height:8px;background:var(--line);border-radius:999px;overflow:hidden;margin-top:10px}.progress>i{display:block;height:100%;width:0;background:var(--accent);border-radius:inherit;transition:width .3s}
+.steps{display:grid;gap:10px}.step{display:flex;gap:12px;align-items:flex-start;padding:12px;border:1px solid var(--line);border-radius:13px;background:var(--soft)}
+.step-num{width:28px;height:28px;border-radius:9px;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:800;flex:none}.step b{display:block;margin-bottom:2px}
+.links-wrap{display:grid;gap:10px}.link-card{display:none;border:1px solid var(--line);border-radius:14px;background:var(--card);padding:13px}
+.link-top{display:flex;align-items:center;gap:10px;margin-bottom:10px}.proto-icon{width:34px;height:34px;border-radius:10px;background:var(--soft);border:1px solid var(--line);display:grid;place-items:center;font-size:18px}.proto-title{font-weight:750}
+.link-value{max-height:84px;overflow:auto}.mini-details{margin-top:10px}.mini-details summary{padding:9px 11px;font-size:13px}
+.notice{font-size:12px;color:var(--muted);text-align:center;padding:4px 10px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:var(--soft);border:1px solid var(--line);font-size:12px;color:var(--muted)}
+@media(max-width:620px){.shell{padding-top:20px}.hero h1{font-size:24px}.secret{display:block}.secret .btn{width:100%;margin-top:8px}.status-grid{grid-template-columns:1fr}.actions .btn{flex:1}}
 </style>
 </head>
 <body>
-<h1>{{if .subTitle}}{{.subTitle}}{{else}}VPN profile{{end}}</h1>
-<p class="muted">Персональная страница подключения.</p>
+<main class="shell">
+  <header class="hero">
+    <h1>{{if .subTitle}}{{.subTitle}}{{else}}VPN Profile{{end}}</h1>
+    <div class="muted">Персональная страница подключения</div>
+  </header>
 
-<div class="grid">
-  <section class="card">
-    <h2>Подписка</h2>
-    <p class="muted small">Добавьте эту ссылку в HAPP, FlClash или другой поддерживаемый клиент.</p>
-    <div class="row">
-      <div class="value" id="sub-url">{{.subUrl}}</div>
-      <button type="button" onclick="copyText('sub-url',this)">Копировать</button>
-    </div>
-  </section>
-
-  <section class="card">
-    <h2>Статус</h2>
-    <div>Трафик: {{.used}} / {{.total}}</div>
-    <div>Осталось: {{.remained}}</div>
-    <div id="expire" data-expire="{{.expire}}">Срок: —</div>
-  </section>
-
-  {{if .links}}
-  <section class="card">
-    <h2>Отдельные ссылки</h2>
-    <div class="links">
-      {{range $i, $link := .links}}
-      <div class="link-card" data-link="{{$link}}" style="display:none">
-        <div class="badge">конфигурация</div>
-        <div class="value link-value">{{$link}}</div>
-        <p>
-          <button type="button" onclick="copyLink(this)">Копировать</button>
-          <a class="button open-link" href="#" style="display:none">Открыть</a>
-        </p>
+  <div class="stack">
+    <section class="card">
+      <div class="card-head"><div class="icon">🔗</div><div><h2>Подписка</h2><div class="muted">Одна ссылка для HAPP, FlClash и других клиентов</div></div></div>
+      <div class="secret">
+        <div class="value" id="sub-url">{{.subUrl}}</div>
+        <button class="btn" type="button" onclick="copyText('sub-url',this)">Копировать</button>
       </div>
-      {{end}}
-    </div>
-  </section>
-  {{end}}
+      <div class="actions">
+        <button class="btn secondary" type="button" onclick="toggleQr('sub-qr', '{{.subUrl}}', this)">▦ Показать QR</button>
+      </div>
+      <div id="sub-qr" class="qr-slot" hidden><div class="qr-box"></div></div>
+    </section>
 
-  {{if .announce}}
-  <section class="card"><h2>Информация</h2><div>{{.announce}}</div></section>
-  {{end}}
-</div>
+    <section class="card" id="status-card"
+      data-enabled="{{.enabled}}" data-online="{{.isOnline}}"
+      data-up="{{.uploadByte}}" data-down="{{.downloadByte}}" data-total="{{.totalByte}}"
+      data-expire="{{.expire}}" data-last-online="{{.lastOnline}}">
+      <div class="card-head"><div class="icon">📊</div><div><h2>Статус</h2><div class="muted">Обновляется автоматически</div></div></div>
+      <div class="status-grid">
+        <div class="metric"><div class="k">Состояние</div><div class="v" id="st-state">—</div></div>
+        <div class="metric"><div class="k">Трафик</div><div class="v" id="st-used">{{.used}}</div></div>
+        <div class="metric"><div class="k">Осталось</div><div class="v" id="st-remained">{{.remained}}</div></div>
+        <div class="metric"><div class="k">Срок</div><div class="v" id="st-expire">—</div></div>
+        <div class="metric"><div class="k">Последняя активность</div><div class="v" id="st-last">—</div></div>
+        <div class="metric"><div class="k">Лимит</div><div class="v" id="st-total">{{.total}}</div></div>
+      </div>
+      <div class="progress" title="Использованный трафик"><i id="traffic-progress"></i></div>
+    </section>
 
-<p class="muted small">Не передавайте эту страницу и ссылки другим людям.</p>
+    <section class="card">
+      <div class="card-head"><div class="icon">📲</div><div><h2>Как подключить</h2><div class="muted">Быстрый вариант для основных приложений</div></div></div>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div><b>Скопируйте подписку</b><span class="muted">Используйте кнопку выше или отсканируйте QR.</span></div></div>
+        <div class="step"><div class="step-num">2</div><div><b>HAPP / FlClash</b><span class="muted">Добавьте профиль по URL и обновите подписку. Приложение само получит подходящий формат.</span></div></div>
+        <div class="step"><div class="step-num">3</div><div><b>Telegram / Amnezia / TUIC</b><span class="muted">Откройте «Остальные ссылки» ниже и используйте нужную отдельную конфигурацию.</span></div></div>
+      </div>
+    </section>
 
+    <section class="card">
+      <details id="extra-links">
+        <summary><span>🧩 Остальные ссылки</span><span class="pill">MTProto · Amnezia · TUIC</span></summary>
+        <div class="details-body">
+          <div class="links-wrap" id="links-box">
+            {{range $i, $link := .links}}
+            <article class="link-card" data-link="{{$link}}">
+              <div class="link-top"><div class="proto-icon">🔐</div><div class="proto-title">Конфигурация</div></div>
+              <div class="value link-value">{{$link}}</div>
+              <div class="actions">
+                <button class="btn" type="button" onclick="copyLink(this)">Копировать</button>
+                <a class="btn secondary open-link" href="#" style="display:none">Открыть</a>
+              </div>
+              <details class="mini-details">
+                <summary>▦ QR-код</summary>
+                <div class="details-body"><div class="qr-box link-qr"></div></div>
+              </details>
+            </article>
+            {{end}}
+          </div>
+        </div>
+      </details>
+    </section>
+
+    {{if .announce}}
+    <section class="card"><div class="card-head"><div class="icon">ℹ️</div><div><h2>Информация</h2></div></div><div>{{.announce}}</div></section>
+    {{end}}
+
+    <div class="notice">Ссылка подписки, отдельные конфигурации и QR-коды являются персональными. Не передавайте их другим людям.</div>
+  </div>
+</main>
+
+<script src="qrcode.js"></script>
 <script>
-function schemeOf(s){const i=s.indexOf('://');return i>0?s.slice(0,i).toUpperCase():'LINK'}
+function ok(btn){const old=btn.textContent;btn.textContent='✓ Скопировано';setTimeout(()=>btn.textContent=old,1200)}
 function copyRaw(raw,btn){
-  navigator.clipboard?.writeText(raw).then(()=>ok(btn)).catch(()=>{
-    const ta=document.createElement('textarea');ta.value=raw;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();ok(btn)
-  })
+  if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(raw).then(()=>ok(btn)).catch(()=>fallbackCopy(raw,btn))}
+  else fallbackCopy(raw,btn)
 }
-function ok(btn){const old=btn.textContent;btn.textContent='Скопировано';setTimeout(()=>btn.textContent=old,1200)}
+function fallbackCopy(raw,btn){const ta=document.createElement('textarea');ta.value=raw;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();ok(btn)}
 function copyText(id,btn){copyRaw(document.getElementById(id).textContent.trim(),btn)}
-function copyLink(btn){const card=btn.closest('.link-card');copyRaw(card.dataset.link,btn)}
-const linksBox=document.querySelector('.links');
-const visibleCards=[];
-document.querySelectorAll('.link-card').forEach(card=>{
-  const raw=card.dataset.link||'';
-  const lower=raw.toLowerCase();
-  let order=99;
+function copyLink(btn){copyRaw(btn.closest('.link-card').dataset.link||'',btn)}
 
-  if(lower.startsWith('tg://')) order=1;
-  else if(lower.startsWith('vpn://') || lower.startsWith('wireguard://')) order=2;
-  else if(lower.startsWith('tuic://')) order=3;
+function makeQr(target,raw){
+  if(target.dataset.ready==='1') return;
+  target.dataset.ready='1';
+  try{
+    const qr=qrcode(0,'L'); qr.addData(raw); qr.make();
+    target.innerHTML=qr.createSvgTag({cellSize:4,margin:12,scalable:true});
+  }catch(e){
+    target.innerHTML='<div class="qr-error">Ссылка слишком длинная для QR-кода. Используйте кнопку «Копировать».</div>';
+  }
+}
+function toggleQr(id,raw,btn){
+  const slot=document.getElementById(id), box=slot.querySelector('.qr-box');
+  slot.hidden=!slot.hidden;
+  if(!slot.hidden){makeQr(box,raw);btn.textContent='▦ Скрыть QR'}else btn.textContent='▦ Показать QR';
+}
+
+function fmtBytes(n){
+  n=Number(n||0); if(!n) return '0 Б';
+  const u=['Б','КБ','МБ','ГБ','ТБ'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}
+  return (i? n.toFixed(n>=10?1:2):Math.round(n))+' '+u[i]
+}
+function fmtExpire(ts){
+  ts=Number(ts||0); if(!ts) return 'Без ограничения';
+  const now=Date.now(), end=ts*1000, diff=end-now;
+  if(diff<=0) return 'Истёк';
+  const d=Math.floor(diff/86400000), h=Math.floor((diff%86400000)/3600000);
+  return d>0 ? d+' дн. '+h+' ч. · '+new Date(end).toLocaleDateString() : h+' ч. · '+new Date(end).toLocaleString()
+}
+function fmtLast(ts){ts=Number(ts||0);return ts>0?new Date(ts).toLocaleString():'Нет данных'}
+function applyStatus(info){
+  const card=document.getElementById('status-card');
+  const enabled=info&&typeof info.enabled!=='undefined'?info.enabled:card.dataset.enabled==='true';
+  const online=info&&typeof info.isOnline!=='undefined'?info.isOnline:card.dataset.online==='true';
+  const expire=info&&typeof info.expire!=='undefined'?info.expire:card.dataset.expire;
+  const last=info&&typeof info.lastOnline!=='undefined'?info.lastOnline:card.dataset.lastOnline;
+  const up=info&&typeof info.uploadByte!=='undefined'?info.uploadByte:card.dataset.up;
+  const down=info&&typeof info.downloadByte!=='undefined'?info.downloadByte:card.dataset.down;
+  const total=info&&typeof info.totalByte!=='undefined'?info.totalByte:card.dataset.total;
+  const used=Number(up||0)+Number(down||0);
+
+  const state=document.getElementById('st-state');
+  state.className='v '+(!enabled?'disabled':online?'online':'offline');
+  state.textContent=!enabled?'● Отключён':online?'● Онлайн':'● Офлайн';
+  if(info){document.getElementById('st-used').textContent=info.used||fmtBytes(used);document.getElementById('st-remained').textContent=info.remained||'—';document.getElementById('st-total').textContent=info.total||'Без ограничения'}
+  document.getElementById('st-expire').textContent=fmtExpire(expire);
+  document.getElementById('st-last').textContent=fmtLast(last);
+  const pct=Number(total)>0?Math.min(100,Math.max(0,used/Number(total)*100)):0;
+  document.getElementById('traffic-progress').style.width=pct+'%';
+}
+applyStatus();
+
+async function refreshStatus(){
+  try{
+    const r=await fetch(window.location.pathname+'?format=info',{cache:'no-store',credentials:'same-origin'});
+    if(r.ok) applyStatus(await r.json());
+  }catch(e){}
+}
+setInterval(refreshStatus,15000);
+
+const linksBox=document.getElementById('links-box');
+const visible=[];
+document.querySelectorAll('.link-card').forEach(card=>{
+  const raw=card.dataset.link||'', lower=raw.toLowerCase();
+  let order=99,title='Конфигурация',icon='🔐';
+  if(lower.startsWith('tg://')){order=1;title='Telegram MTProto';icon='✈️'}
+  else if(lower.startsWith('vpn://')){order=2;title='AmneziaVPN';icon='🛡️'}
+  else if(lower.startsWith('wireguard://')){order=2;title='AmneziaWG';icon='🛡️'}
+  else if(lower.startsWith('tuic://')){order=3;title='TUIC';icon='⚡'}
   else return;
 
-  card.style.display='';
-  card.dataset.order=String(order);
-  visibleCards.push(card);
-
-  const badge=card.querySelector('.badge');
-  badge.textContent=schemeOf(raw);
+  card.style.display='block';card.dataset.order=String(order);
+  card.querySelector('.proto-title').textContent=title;
+  card.querySelector('.proto-icon').textContent=icon;
+  visible.push(card);
 
   if(lower.startsWith('tg://')){
-    badge.textContent='Telegram MTProto';
-    const a=card.querySelector('.open-link');
-    a.href=raw;
-    a.style.display='inline-block';
-    a.textContent='Открыть в Telegram';
-  } else if(lower.startsWith('vpn://')){
-    badge.textContent='AmneziaVPN';
-  } else if(lower.startsWith('wireguard://')){
-    badge.textContent='AmneziaWG';
-  } else if(lower.startsWith('tuic://')){
-    badge.textContent='TUIC';
+    const a=card.querySelector('.open-link');a.href=raw;a.style.display='inline-flex';a.textContent='Открыть в Telegram';
   }
+  const details=card.querySelector('.mini-details');
+  details.addEventListener('toggle',()=>{if(details.open) makeQr(card.querySelector('.link-qr'),raw)});
 });
-visibleCards
-  .sort((a,b)=>Number(a.dataset.order)-Number(b.dataset.order))
-  .forEach(card=>linksBox.appendChild(card));
-const exp=document.getElementById('expire');const ts=Number(exp.dataset.expire||0);
-exp.textContent=ts>0?'Срок: '+new Date(ts*1000).toLocaleString():'Срок: без ограничения';
+visible.sort((a,b)=>Number(a.dataset.order)-Number(b.dataset.order)).forEach(card=>linksBox.appendChild(card));
 </script>
 </body>
 </html>
