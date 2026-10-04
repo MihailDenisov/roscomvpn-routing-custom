@@ -920,6 +920,13 @@ server {
     absolute_redirect off;
     access_log off;
 $locs
+    location = ${SUB_PATH}qrcode.js {
+        alias /etc/3x-ui/sub_templates/kit/qrcode.js;
+        default_type application/javascript;
+        add_header Cache-Control "public, max-age=86400" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        access_log off;
+    }
     location $SUB_PATH {
         proxy_pass http://127.0.0.1:${INNER[sub]};
         proxy_set_header Host \$host;
