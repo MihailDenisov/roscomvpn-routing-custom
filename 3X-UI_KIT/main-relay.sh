@@ -189,6 +189,41 @@ update_inbounds() {
   done < <(jq -r '.[] | select(.enable == true) | .id' <<<"$list")
 }
 
+ensure_mtproto_relay_host() {
+  local list id groups gid payload
+  list=$(api GET inbounds/list)
+  while read -r id; do
+    [[ -n $id ]] || continue
+    groups=$(api GET "hosts/byInbound/$id")
+    gid=$(jq -r '.[] | select(.remark == "KIT relay MTProto") | .groupId' <<<"$groups" | head -n1)
+    if [[ -n $gid ]]; then
+      payload=$(jq -c --arg relay "$RELAY_DOMAIN" --argjson id "$id" '
+        .[] | select(.groupId == $gid)
+      ' --arg gid "$gid" <<<"$groups" 2>/dev/null || true)
+      # Preserve all supported host-group fields while forcing only the public endpoint.
+      payload=$(jq -c --arg relay "$RELAY_DOMAIN" --argjson id "$id" '
+        .inboundIds=[$id]
+        | .remark="KIT relay MTProto"
+        | .hosts=[$relay]
+        | .port=443
+        | .security="same"
+        | .isDisabled=false
+      ' <<<"$payload")
+      api POST "hosts/update/$gid" "$payload" >/dev/null
+    else
+      payload=$(jq -nc --arg relay "$RELAY_DOMAIN" --argjson id "$id" '{
+        inboundIds:[$id],
+        remark:"KIT relay MTProto",
+        hosts:[$relay],
+        port:443,
+        security:"same",
+        isDisabled:false
+      }')
+      api POST "hosts/add" "$payload" >/dev/null
+    fi
+  done < <(jq -r '.[] | select(.enable == true and .protocol == "mtproto") | .id' <<<"$list")
+}
+
 lockdown_ufw() {
   command -v ufw >/dev/null || die "ufw is not installed"
   local nums n
@@ -211,6 +246,8 @@ activate() {
   say "Backup: $backup"
   say "Updating inbound share/external addresses to $RELAY_DOMAIN"
   update_inbounds
+  say "Ensuring MTProto public Host endpoint is $RELAY_DOMAIN:443"
+  ensure_mtproto_relay_host
 
   all=$(api POST setting/all '{}')
   sub_path=$(jq -r '.subPath // "/sub/"' <<<"$all")
@@ -267,7 +304,15 @@ status() {
     openssl x509 -in "$cert" -noout -dates -ext subjectAltName
   fi
   echo
-  api GET inbounds/list | jq '[.[] | {id,remark,protocol,port,shareAddrStrategy,shareAddr,externalProxy:(if (.streamSettings|type)=="object" then (.streamSettings.externalProxy // null) elif (.streamSettings|type)=="string" and (.streamSettings|length)>0 then ((.streamSettings|fromjson).externalProxy // null) else null end)}]'
+  local inbounds mtid
+  inbounds=$(api GET inbounds/list)
+  jq '[.[] | {id,remark,protocol,port,shareAddrStrategy,shareAddr,externalProxy:(if (.streamSettings|type)=="object" then (.streamSettings.externalProxy // null) elif (.streamSettings|type)=="string" and (.streamSettings|length)>0 then ((.streamSettings|fromjson).externalProxy // null) else null end)}]' <<<"$inbounds"
+  while read -r mtid; do
+    [[ -n $mtid ]] || continue
+    echo
+    echo "MTProto Hosts (inbound $mtid):"
+    api GET "hosts/byInbound/$mtid" | jq '[.[] | {groupId,remark,hosts,port,security,isDisabled}]'
+  done < <(jq -r '.[] | select(.protocol == "mtproto") | .id' <<<"$inbounds")
   echo
   command -v ufw >/dev/null && ufw status numbered || true
 }
