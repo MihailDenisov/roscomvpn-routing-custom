@@ -10,13 +10,15 @@ usage() {
 Usage:
   setup-relay.sh --main-ip MAIN_IPV4 [--relay-domain NAME] [--ssh-port PORT] [--keep-ipv6]
 
-Configures a plain Linux L3/L4 relay with iptables only. No VPN/proxy software is installed.
+Configures a hybrid L4 relay:
+  * HAProxy handles 443/tcp and preserves the real client IP with PROXY v2.
+  * iptables DNAT/SNAT handles 80/tcp and UDP.
 Forwarded ports:
-  80/tcp    -> MAIN:80      (Let's Encrypt HTTP-01)
-  443/tcp   -> MAIN:443     (REALITY/XHTTP/MTProto/HTTPS/subscription/panel)
-  443/udp   -> MAIN:443     (Hysteria2)
-  8443/udp  -> MAIN:8443    (AmneziaWG 3.1)
-  8444/udp  -> MAIN:8444    (TUIC)
+  80/tcp    -> MAIN:80       (Let's Encrypt HTTP-01, NAT)
+  443/tcp   -> MAIN:10442    (primary, HAProxy + PROXY v2; MAIN:443 is backup)
+  443/udp   -> MAIN:443      (Hysteria2, NAT)
+  8443/udp  -> MAIN:8443     (AmneziaWG 3.1, NAT)
+  8444/udp  -> MAIN:8444     (TUIC, NAT)
 USAGE
 }
 
@@ -43,9 +45,9 @@ fi
 
 command -v apt-get >/dev/null || die "Ubuntu/Debian with apt is required"
 export DEBIAN_FRONTEND=noninteractive
-say "Installing minimal networking tools"
+say "Installing relay networking tools"
 apt-get update -qq
-apt-get install -y -qq iptables iproute2 curl ca-certificates >/dev/null
+apt-get install -y -qq iptables iproute2 curl ca-certificates haproxy >/dev/null
 
 WAN_IF=$(ip -4 route get "$MAIN_IP" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
 [[ -n $WAN_IF ]] || WAN_IF=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')
@@ -100,6 +102,39 @@ RELAY_DOMAIN=$RELAY_DOMAIN
 EOF_CFG
 chmod 600 /etc/kit-relay/config
 
+# TCP/443 is proxied in userspace so the original client address can be carried
+# to MAIN using PROXY protocol v2. MAIN:10442 is the real-IP ingress created by
+# main-relay.sh; MAIN:443 stays as a temporary/availability fallback during
+# migrations and if the dedicated ingress is unavailable.
+cat >/etc/haproxy/haproxy.cfg <<EOF_HAPROXY
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    daemon
+    maxconn 32768
+
+defaults
+    log global
+    mode tcp
+    option tcplog
+    option tcpka
+    timeout connect 10s
+    timeout client 1h
+    timeout server 1h
+
+frontend kit_tcp_443
+    bind 0.0.0.0:443
+    default_backend kit_main_443
+
+backend kit_main_443
+    option tcp-check
+    server main_proxy $MAIN_IP:10442 check inter 2s fall 2 rise 2 send-proxy-v2
+    server main_legacy $MAIN_IP:443 check inter 2s fall 2 rise 2 backup
+EOF_HAPROXY
+haproxy -c -f /etc/haproxy/haproxy.cfg >/dev/null
+systemctl enable haproxy >/dev/null 2>&1
+systemctl restart haproxy
+
 cat >/usr/local/sbin/kit-relay-firewall <<'EOF_FW'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -125,20 +160,22 @@ ensure_jump nat POSTROUTING KIT_RELAY_SNAT
 ensure_jump filter INPUT KIT_RELAY_INPUT
 ensure_jump filter FORWARD KIT_RELAY_FORWARD
 
-# Only SSH/ICMP are local services. Relayed ports are DNATed before INPUT.
+# TCP/443 terminates at HAProxy locally. NAT-relayed ports are DNATed before INPUT.
 $IPT -A KIT_RELAY_INPUT -i lo -j ACCEPT
 $IPT -A KIT_RELAY_INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 $IPT -A KIT_RELAY_INPUT -p tcp --dport "$SSH_PORT" -j ACCEPT
+$IPT -A KIT_RELAY_INPUT -i "$WAN_IF" -p tcp --dport 443 -j ACCEPT
 # Keep DHCP renewal working on VPSes whose public NIC is configured by DHCP.
 $IPT -A KIT_RELAY_INPUT -i "$WAN_IF" -p udp --sport 67 --dport 68 -j ACCEPT
 $IPT -A KIT_RELAY_INPUT -p icmp -j ACCEPT
 $IPT -A KIT_RELAY_INPUT -j DROP
 
-for port in 80 443; do
-  $IPT -t nat -A KIT_RELAY_DNAT -i "$WAN_IF" -p tcp --dport "$port" -j DNAT --to-destination "$MAIN_IP:$port"
-  $IPT -t nat -A KIT_RELAY_SNAT -p tcp -d "$MAIN_IP" --dport "$port" -j MASQUERADE
-  $IPT -A KIT_RELAY_FORWARD -i "$WAN_IF" -p tcp -d "$MAIN_IP" --dport "$port" -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
-done
+# 80/tcp stays as plain NAT for ACME. 443/tcp is intentionally NOT DNATed:
+# HAProxy owns it and forwards to MAIN with PROXY v2.
+port=80
+$IPT -t nat -A KIT_RELAY_DNAT -i "$WAN_IF" -p tcp --dport "$port" -j DNAT --to-destination "$MAIN_IP:$port"
+$IPT -t nat -A KIT_RELAY_SNAT -p tcp -d "$MAIN_IP" --dport "$port" -j MASQUERADE
+$IPT -A KIT_RELAY_FORWARD -i "$WAN_IF" -p tcp -d "$MAIN_IP" --dport "$port" -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
 for port in 443 8443 8444; do
   $IPT -t nat -A KIT_RELAY_DNAT -i "$WAN_IF" -p udp --dport "$port" -j DNAT --to-destination "$MAIN_IP:$port"
   $IPT -t nat -A KIT_RELAY_SNAT -p udp -d "$MAIN_IP" --dport "$port" -j MASQUERADE
@@ -151,7 +188,7 @@ chmod 700 /usr/local/sbin/kit-relay-firewall
 
 cat >/etc/systemd/system/kit-relay-firewall.service <<'EOF_UNIT'
 [Unit]
-Description=3X-UI KIT plain iptables relay
+Description=3X-UI KIT hybrid relay firewall
 After=network-online.target
 Wants=network-online.target
 
@@ -168,8 +205,9 @@ systemctl daemon-reload
 systemctl enable --now kit-relay-firewall.service >/dev/null
 
 say "Relay configured: $RELAY_IP -> $MAIN_IP via $WAN_IF"
-echo "TCP: 80, 443"
-echo "UDP: 443, 8443, 8444"
+echo "TCP 443: HAProxy -> MAIN:10442 with PROXY v2 (MAIN:443 backup)"
+echo "TCP 80:  iptables NAT -> MAIN:80"
+echo "UDP:     iptables NAT -> MAIN:443,8443,8444"
 echo "SSH: $SSH_PORT/tcp"
 [[ $DISABLE_IPV6 == yes ]] && echo "IPv6: disabled"
 if [[ -n $RELAY_DOMAIN ]]; then
@@ -181,6 +219,8 @@ fi
 
 echo
 echo "Check rules:"
+echo "  systemctl status haproxy --no-pager"
+echo "  ss -lntp | grep ':443'"
 echo "  iptables -t nat -S KIT_RELAY_DNAT"
 echo "  iptables -S KIT_RELAY_FORWARD"
 echo "  systemctl status kit-relay-firewall --no-pager"
