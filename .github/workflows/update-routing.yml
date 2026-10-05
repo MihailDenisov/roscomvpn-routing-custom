@@ -1,6 +1,11 @@
 name: Update custom routing
 
 on:
+  push:
+    paths:
+      - "custom-direct.json"
+      - "custom-proxy.json"
+      - "scripts/build.py"
   workflow_dispatch:
   schedule:
     - cron: "17 */6 * * *"
