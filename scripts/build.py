@@ -7,6 +7,7 @@ from urllib.request import Request, urlopen
 UPSTREAM = "https://raw.githubusercontent.com/hydraponique/roscomvpn-routing/main/HAPP/DEFAULT.JSON"
 ROOT = Path(__file__).resolve().parents[1]
 CUSTOM = ROOT / "custom-direct.json"
+CUSTOM_PROXY = ROOT / "custom-proxy.json"
 OUT_DIR = ROOT / "HAPP"
 OUT_JSON = OUT_DIR / "DEFAULT-CUSTOM.JSON"
 OUT_DEEPLINK = OUT_DIR / "DEFAULT-CUSTOM.DEEPLINK"
@@ -25,6 +26,10 @@ def main():
 
     for key in ("DirectSites", "DirectIp"):
         base[key] = unique([*base.get(key, []), *custom.get(key, [])])
+
+    if CUSTOM_PROXY.exists():
+        custom_proxy = json.loads(CUSTOM_PROXY.read_text(encoding="utf-8"))
+        base["ProxySites"] = unique([*base.get("ProxySites", []), *custom_proxy.get("ProxySites", [])])
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(base, ensure_ascii=False, indent=2) + "\n"
