@@ -252,7 +252,7 @@ configure_proxy_ingress() {
     local nums n
     nums=$(ufw status numbered | awk -v p="$PROXY_INGRESS_PORT" '
       $0 ~ ("(^|[^0-9])" p "/tcp([^0-9]|$)") {
-        s=$0; sub(/^\\[[[:space:]]*/,"",s); sub(/\\].*/,"",s); gsub(/[[:space:]]/,"",s); print s
+        s=$0; sub(/^\[[[:space:]]*/,"",s); sub(/\].*/,"",s); gsub(/[[:space:]]/,"",s); print s
       }' | sort -rn)
     for n in $nums; do ufw --force delete "$n" >/dev/null; done
     ufw allow from "$RELAY_IP" to any port "$PROXY_INGRESS_PORT" proto tcp >/dev/null
