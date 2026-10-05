@@ -202,7 +202,10 @@ WantedBy=multi-user.target
 EOF_UNIT
 
 systemctl daemon-reload
-systemctl enable --now kit-relay-firewall.service >/dev/null
+systemctl enable kit-relay-firewall.service >/dev/null
+# RemainAfterExit units are not re-executed by "enable --now" when already active.
+# Always restart so updated NAT/filter rules are applied immediately.
+systemctl restart kit-relay-firewall.service
 
 say "Relay configured: $RELAY_IP -> $MAIN_IP via $WAN_IF"
 echo "TCP 443: HAProxy -> MAIN:10442 with PROXY v2 (MAIN:443 backup)"
