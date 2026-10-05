@@ -67,3 +67,31 @@ VPN-ноды, UUID, пароли, Reality-параметры и endpoint'ы ге
 ```
 
 Это блокирует рекламные/трекерные домены, но не гарантирует удаление рекламы, которая отдаётся с тех же CDN/доменов, что и основной контент.
+
+## Telegram WEB Proxy (экспериментально)
+
+В `3X-UI_KIT/setup-telegram-webproxy.sh` есть отдельный тестовый установщик нового Telegram WEB Proxy. Он предназначен только для отдельного чистого Ubuntu VPS и не изменяет MAIN/relay-инфраструктуру 3X-UI KIT.
+
+Особенности:
+
+- upstream `telegramdesktop/tproxy-server` зафиксирован на проверенном commit;
+- устанавливаются Caddy, `tproxy-server` и официальный MTProxy backend;
+- используются публичные `80/tcp` и `443/tcp`;
+- secret генерируется автоматически, если не передан;
+- для production-like теста рекомендуется свой нейтральный сайт через `--site-dir` или локальное приложение через `--site-upstream`;
+- `--demo-site` предназначен только для временного стенда;
+- ссылка и secret сохраняются root-only в `/root/kit-webproxy/README.txt`.
+
+Пример тестовой установки:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/main/3X-UI_KIT/setup-telegram-webproxy.sh) \
+  --hostname webproxy.example.com \
+  --email admin@example.com \
+  --demo-site
+```
+
+Перед запуском DNS A-запись hostname должна указывать на VPS, а firewall провайдера должен пропускать TCP/80 и TCP/443.
+
+> Важно: Telegram WEB Proxy пока считаем экспериментальной функцией. Не используйте этот VPS для текущего 3X-UI MAIN/relay и не рассчитывайте на него как на единственный Telegram transport.
+
