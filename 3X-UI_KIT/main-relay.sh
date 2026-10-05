@@ -192,6 +192,49 @@ update_inbounds() {
   done < <(jq -r '.[] | select(.enable == true) | .id' <<<"$list")
 }
 
+configure_http_real_ip_inbounds() {
+  local list id payload
+  list=$(api GET inbounds/list)
+  while read -r id; do
+    [[ -n $id ]] || continue
+    payload=$(jq -c --argjson id "$id" '
+      .[] | select(.id == $id)
+      | if (.streamSettings|type) == "object" then
+          .streamSettings |=
+            (if (.network == "ws" or .network == "grpc") then
+               .sockopt = ((.sockopt // {}) + {trustedXForwardedFor:["X-Forwarded-For"], acceptProxyProtocol:false})
+             else . end)
+        elif (.streamSettings|type) == "string" and (.streamSettings|length) > 0 then
+          .streamSettings = ((.streamSettings|fromjson)
+            | if (.network == "ws" or .network == "grpc") then
+                .sockopt = ((.sockopt // {}) + {trustedXForwardedFor:["X-Forwarded-For"], acceptProxyProtocol:false})
+              else . end
+            | tojson)
+        else . end
+    ' <<<"$list")
+    api POST "inbounds/update/$id" "$payload" >/dev/null
+  done < <(jq -r '.[] | select(.enable == true and .listen == "127.0.0.1")
+    | (.streamSettings | if type == "string" and length > 0 then fromjson else . end) as $st
+    | select($st.network == "ws" or $st.network == "grpc") | .id' <<<"$list")
+
+  # The inner HTTPS nginx already forwards XFF for WebSocket. Ensure gRPC
+  # receives the same real-IP header before it reaches Xray.
+  if [[ -f /etc/nginx/conf.d/kit.conf ]]; then
+    python3 - <<'PY'
+from pathlib import Path
+p = Path("/etc/nginx/conf.d/kit.conf")
+text = p.read_text()
+needle = "        grpc_set_header X-Real-IP $proxy_protocol_addr;\n"
+add = needle + "        grpc_set_header X-Forwarded-For $proxy_protocol_addr;\n"
+if needle in text and "grpc_set_header X-Forwarded-For $proxy_protocol_addr;" not in text:
+    text = text.replace(needle, add)
+    p.write_text(text)
+PY
+    nginx -t >/dev/null
+    systemctl reload nginx
+  fi
+}
+
 ensure_mtproto_relay_host() {
   local list id groups gid payload old_gid remaining
   list=$(api GET inbounds/list)
@@ -329,6 +372,7 @@ activate() {
   backup=$(backup_state)
   say "Backup: $backup"
   configure_proxy_ingress
+  configure_http_real_ip_inbounds
   say "Updating inbound share/external addresses to $RELAY_DOMAIN"
   update_inbounds
   say "Ensuring MTProto public Host endpoint is $RELAY_DOMAIN:443"
