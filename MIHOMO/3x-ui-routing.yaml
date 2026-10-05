@@ -31,6 +31,15 @@ proxy-groups:
   proxies:
   - 🔓 Без VPN
   - 🛡️ VPN
+- name: 🤖 Нейросети
+  icon: https://cdn.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Chat.png
+  type: fallback
+  url: https://www.gstatic.com/generate_204
+  interval: 300
+  tolerance: 150
+  proxies:
+  - ⚡️ Авто
+  - REJECT-DROP
 - name: ⚡️ Авто
   type: url-test
   tolerance: 150
@@ -284,6 +293,27 @@ rules:
   - RULE-SET,private-domains,DIRECT
   - RULE-SET,category-ads,REJECT-DROP
   - RULE-SET,win-spy,REJECT-DROP
+  # AI services: VPN only; fallback rejects instead of leaking DIRECT.
+  # OpenAI / ChatGPT
+  - DOMAIN-SUFFIX,openai.com,🤖 Нейросети
+  - DOMAIN-SUFFIX,chatgpt.com,🤖 Нейросети
+  - DOMAIN-SUFFIX,oaistatic.com,🤖 Нейросети
+  - DOMAIN-SUFFIX,oaiusercontent.com,🤖 Нейросети
+  - DOMAIN-SUFFIX,sora.com,🤖 Нейросети
+  - DOMAIN,cdn.auth0.com,🤖 Нейросети
+  # Anthropic / Claude
+  - DOMAIN-SUFFIX,anthropic.com,🤖 Нейросети
+  - DOMAIN-SUFFIX,claude.ai,🤖 Нейросети
+  - DOMAIN-SUFFIX,claude.com,🤖 Нейросети
+  - DOMAIN-SUFFIX,claudeusercontent.com,🤖 Нейросети
+  # Moonshot AI / Kimi
+  - DOMAIN-SUFFIX,kimi.com,🤖 Нейросети
+  - DOMAIN-SUFFIX,kimi.ai,🤖 Нейросети
+  - DOMAIN-SUFFIX,moonshot.cn,🤖 Нейросети
+  - DOMAIN-SUFFIX,moonshot.ai,🤖 Нейросети
+  # Other AI services
+  - DOMAIN-SUFFIX,perplexity.ai,🤖 Нейросети
+  - DOMAIN-SUFFIX,gemini.google.com,🤖 Нейросети
   - RULE-SET,torrent-domains,DIRECT
   - RULE-SET,google-play,PROXY
   - RULE-SET,twitch-ads,PROXY
