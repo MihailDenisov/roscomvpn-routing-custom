@@ -20,6 +20,8 @@ prepare:
 activate:
   * changes 3x-ui subscription/share endpoints to relay-domain
   * changes existing externalProxy.dest values to relay-domain
+  * creates a dedicated MAIN TCP ingress on 10442 with PROXY protocol
+    so the relay can preserve real client IPs
   * updates kit/kit-sub public subscription host
   * with --lockdown, limits MAIN VPN ports to relay-ip via UFW
 
@@ -35,6 +37,7 @@ RELAY_DOMAIN=""
 RELAY_IP=""
 ORIGIN_DOMAIN=""
 LOCKDOWN=no
+PROXY_INGRESS_PORT=10442
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --relay-domain) RELAY_DOMAIN=${2:-}; shift 2 ;;
@@ -238,6 +241,70 @@ ensure_mtproto_relay_host() {
   done < <(jq -r '.[] | select(.enable == true and .protocol == "mtproto") | .id' <<<"$list")
 }
 
+configure_proxy_ingress() {
+  local cfg=/etc/nginx/kit-stream.conf
+  [[ -f $cfg ]] || { warn "No $cfg; TCP real-IP ingress requires SINGLE/nginx mode"; return 0; }
+  nginx -V 2>&1 | grep -q -- '--with-stream_realip_module'     || die "nginx lacks ngx_stream_realip_module; cannot safely preserve client IPs"
+
+  # Do not expose a PROXY-protocol listener to arbitrary Internet clients:
+  # a direct client could otherwise forge its source address in the PROXY header.
+  if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+    local nums n
+    nums=$(ufw status numbered | awk -v p="$PROXY_INGRESS_PORT" '
+      $0 ~ ("(^|[^0-9])" p "/tcp([^0-9]|$)") {
+        s=$0; sub(/^\\[[[:space:]]*/,"",s); sub(/\\].*/,"",s); gsub(/[[:space:]]/,"",s); print s
+      }' | sort -rn)
+    for n in $nums; do ufw --force delete "$n" >/dev/null; done
+    ufw allow from "$RELAY_IP" to any port "$PROXY_INGRESS_PORT" proto tcp >/dev/null
+  else
+    die "UFW must be active before enabling the trusted PROXY ingress on $PROXY_INGRESS_PORT/tcp"
+  fi
+
+  python3 - "$cfg" "$RELAY_IP" "$PROXY_INGRESS_PORT" <<'PY'
+from pathlib import Path
+import re, sys
+
+p = Path(sys.argv[1])
+relay = sys.argv[2]
+port = int(sys.argv[3])
+text = p.read_text()
+
+begin = "    # BEGIN KIT RELAY PROXY INGRESS"
+end = "    # END KIT RELAY PROXY INGRESS"
+text = re.sub(r"\n?[ \t]*# BEGIN KIT RELAY PROXY INGRESS.*?# END KIT RELAY PROXY INGRESS\n?", "\n", text, flags=re.S)
+
+block = f"""
+    # BEGIN KIT RELAY PROXY INGRESS
+    # HAProxy on the relay sends PROXY v2 here. stream_realip replaces
+    # $remote_addr with the original client before nginx emits a new PROXY
+    # header to REALITY/XHTTP/MTProto/the inner HTTPS router.
+    server {{
+        listen {port} proxy_protocol;
+        set_real_ip_from {relay};
+        ssl_preread on;
+        proxy_pass $kit_upstream;
+        proxy_protocol on;
+        proxy_connect_timeout 10s;
+        proxy_timeout 1h;
+    }}
+    # END KIT RELAY PROXY INGRESS
+"""
+
+pos = text.rfind("}")
+if pos < 0:
+    raise SystemExit("invalid nginx stream config: closing brace not found")
+text = text[:pos].rstrip() + "\n" + block + "}\n"
+p.write_text(text)
+PY
+
+  nginx -t >/tmp/nginx-proxy-ingress-test.log 2>&1 || {
+    cat /tmp/nginx-proxy-ingress-test.log >&2
+    die "nginx rejected the relay PROXY ingress"
+  }
+  systemctl reload nginx
+  say "TCP real-IP ingress: RELAY $RELAY_IP -> MAIN:$PROXY_INGRESS_PORT (PROXY protocol)"
+}
+
 lockdown_ufw() {
   command -v ufw >/dev/null || die "ufw is not installed"
   local nums n
@@ -247,7 +314,10 @@ lockdown_ufw() {
       s=$0; sub(/^\[[[:space:]]*/,"",s); sub(/\].*/,"",s); gsub(/[[:space:]]/,"",s); print s
     }' | sort -rn)
   for n in $nums; do ufw --force delete "$n" >/dev/null; done
+  # 443/tcp is retained as HAProxy's emergency legacy backend; normal TCP
+  # traffic uses the dedicated PROXY ingress below.
   ufw allow from "$RELAY_IP" to any port 443 proto tcp >/dev/null
+  ufw allow from "$RELAY_IP" to any port "$PROXY_INGRESS_PORT" proto tcp >/dev/null
   ufw allow from "$RELAY_IP" to any port 443 proto udp >/dev/null
   ufw allow from "$RELAY_IP" to any port 8443 proto udp >/dev/null
   ufw allow from "$RELAY_IP" to any port 8444 proto udp >/dev/null
@@ -258,6 +328,7 @@ activate() {
   local backup all sub_path sub_uri updated
   backup=$(backup_state)
   say "Backup: $backup"
+  configure_proxy_ingress
   say "Updating inbound share/external addresses to $RELAY_DOMAIN"
   update_inbounds
   say "Ensuring MTProto public Host endpoint is $RELAY_DOMAIN:443"
@@ -378,6 +449,7 @@ status() {
   local cert="/etc/letsencrypt/live/$ORIGIN_DOMAIN/fullchain.pem"
   echo "Origin: $ORIGIN_DOMAIN"
   echo "Relay:  $RELAY_DOMAIN"
+  echo "TCP real-IP ingress: $PROXY_INGRESS_PORT/tcp (PROXY protocol from relay only)"
   echo "DNS:    $(resolved_relay_ip || true)"
   if [[ -s $cert ]]; then
     openssl x509 -in "$cert" -noout -dates -ext subjectAltName
