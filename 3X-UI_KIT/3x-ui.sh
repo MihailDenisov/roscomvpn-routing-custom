@@ -582,7 +582,8 @@ proto_ws() {
   settings=$(jq -nc --arg id "$(uuid)" --argjson c "$(client_base ws)" '{clients: [$c + {id: $id, flow: ""}], decryption: "none"}')
   stream=$(jq -nc --argjson t "$(tls_json '["http/1.1"]')" --arg path "/$(rand_str 10 | tr 'A-Z' 'a-z')" '{network: "ws", security: "tls", wsSettings: {path: $path}, tlsSettings: $t}')
   if [[ $SINGLE == yes ]]; then
-    stream=$(jq -c --argjson e "$(ext_proxy tls '["http/1.1"]')" '{network, wsSettings, security: "none", externalProxy: $e}' <<<"$stream")
+    stream=$(jq -c --argjson e "$(ext_proxy tls '["http/1.1"]')" '{network, wsSettings, security: "none", externalProxy: $e,
+      sockopt: {trustedXForwardedFor: ["X-Forwarded-For"]}}' <<<"$stream")
     add_inbound "VLESS-WS" "${INNER[ws]}" inner vless "$settings" "$stream"
   else
     add_inbound "VLESS-WS" "${PORTS[ws]}" tcp vless "$settings" "$stream"
@@ -594,7 +595,8 @@ proto_trojan() {
   settings=$(jq -nc --arg pw "$(rand_str 16)" --argjson c "$(client_base trojan)" '{clients: [$c + {password: $pw}]}')
   stream=$(jq -nc --argjson t "$(tls_json '["h2"]')" --arg sn "$(rand_str 8 | tr 'A-Z' 'a-z')" '{network: "grpc", security: "tls", grpcSettings: {serviceName: $sn}, tlsSettings: $t}')
   if [[ $SINGLE == yes ]]; then
-    stream=$(jq -c --argjson e "$(ext_proxy tls '["h2"]')" '{network, grpcSettings, security: "none", externalProxy: $e}' <<<"$stream")
+    stream=$(jq -c --argjson e "$(ext_proxy tls '["h2"]')" '{network, grpcSettings, security: "none", externalProxy: $e,
+      sockopt: {trustedXForwardedFor: ["X-Forwarded-For"]}}' <<<"$stream")
     add_inbound "Trojan-gRPC" "${INNER[trojan]}" inner trojan "$settings" "$stream"
   else
     add_inbound "Trojan-gRPC" "${PORTS[trojan]}" tcp trojan "$settings" "$stream"
@@ -606,7 +608,8 @@ proto_vmess() {
   settings=$(jq -nc --arg id "$(uuid)" --argjson c "$(client_base vmess)" '{clients: [$c + {id: $id, security: "auto", alterId: 0}]}')
   stream=$(jq -nc --argjson t "$(tls_json '["http/1.1"]')" --arg path "/$(rand_str 10 | tr 'A-Z' 'a-z')" '{network: "ws", security: "tls", wsSettings: {path: $path}, tlsSettings: $t}')
   if [[ $SINGLE == yes ]]; then
-    stream=$(jq -c --argjson e "$(ext_proxy tls '["http/1.1"]')" '{network, wsSettings, security: "none", externalProxy: $e}' <<<"$stream")
+    stream=$(jq -c --argjson e "$(ext_proxy tls '["http/1.1"]')" '{network, wsSettings, security: "none", externalProxy: $e,
+      sockopt: {trustedXForwardedFor: ["X-Forwarded-For"]}}' <<<"$stream")
     add_inbound "VMess-WS" "${INNER[vmess]}" inner vmess "$settings" "$stream"
   else
     add_inbound "VMess-WS" "${PORTS[vmess]}" tcp vmess "$settings" "$stream"
@@ -864,6 +867,7 @@ HTML
     location /$path/ {
         grpc_pass grpc://127.0.0.1:$port;
         grpc_set_header X-Real-IP \$proxy_protocol_addr;
+        grpc_set_header X-Forwarded-For \$proxy_protocol_addr;
         grpc_read_timeout 1h;
         grpc_send_timeout 1h;
         client_max_body_size 0;
