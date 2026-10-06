@@ -20,7 +20,7 @@ diff --git a/internal/tgweb/client.go b/internal/tgweb/client.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/tgweb/client.go
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,158 @@
 +package tgweb
 +
 +import (
@@ -183,7 +183,7 @@ diff --git a/internal/tgweb/manager.go b/internal/tgweb/manager.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/tgweb/manager.go
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,201 @@
 +package tgweb
 +
 +import (
@@ -389,7 +389,7 @@ diff --git a/internal/web/job/tgweb_job.go b/internal/web/job/tgweb_job.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/web/job/tgweb_job.go
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,132 @@
 +package job
 +
 +import (
@@ -525,13 +525,13 @@ new file mode 100644
 diff --git a/internal/web/web.go b/internal/web/web.go
 --- a/internal/web/web.go
 +++ b/internal/web/web.go
-@@ -277,6 +277,7 @@ const (
+@@ -277,4 +277,5 @@ const (
  	cadenceMtproto       = "@every 10s"
  	cadenceAmneziaWG     = "@every 10s"
  	cadenceTuic          = "@every 10s"
 +	cadenceTgWeb         = "@every 10s"
  	cadenceClientIPScan  = "@every 10s"
-@@ -321,6 +322,10 @@ func (s *Server) startTask(restartXray bool, loc *time.Location) {
+@@ -321,5 +322,9 @@ func (s *Server) startTask(restartXray bool, loc *time.Location) {
  	_, _ = s.cron.AddJob(cadenceTuic, tuicJob)
  	go tuicJob.Run()
  
@@ -545,7 +545,7 @@ diff --git a/internal/web/web.go b/internal/web/web.go
 diff --git a/internal/web/runtime/local.go b/internal/web/runtime/local.go
 --- a/internal/web/runtime/local.go
 +++ b/internal/web/runtime/local.go
-@@ -49,6 +49,10 @@ func (l *Local) withAPI(fn func(api *xray.XrayAPI) error) error {
+@@ -49,4 +49,8 @@ func (l *Local) withAPI(fn func(api *xray.XrayAPI) error) error {
  }
  
  func (l *Local) AddInbound(_ context.Context, ib *model.Inbound) error {
@@ -554,7 +554,7 @@ diff --git a/internal/web/runtime/local.go b/internal/web/runtime/local.go
 +		return nil
 +	}
  	if ib.Protocol == model.MTProto {
-@@ -106,6 +110,9 @@ func (l *Local) AddInbound(_ context.Context, ib *model.Inbound) error {
+@@ -106,4 +110,7 @@ func (l *Local) AddInbound(_ context.Context, ib *model.Inbound) error {
  }
  
  func (l *Local) DelInbound(_ context.Context, ib *model.Inbound) error {
@@ -562,7 +562,7 @@ diff --git a/internal/web/runtime/local.go b/internal/web/runtime/local.go
 +		return nil
 +	}
  	if ib.Protocol == model.MTProto {
-@@ -133,6 +140,19 @@ func (l *Local) DelInbound(_ context.Context, ib *model.Inbound) error {
+@@ -133,4 +140,17 @@ func (l *Local) DelInbound(_ context.Context, ib *model.Inbound) error {
  }
  
  func (l *Local) UpdateInbound(ctx context.Context, oldIb, newIb *model.Inbound) error {
@@ -580,7 +580,7 @@ diff --git a/internal/web/runtime/local.go b/internal/web/runtime/local.go
 +		return l.DelInbound(ctx, oldIb)
 +	}
  	if oldIb.Protocol == model.MTProto || newIb.Protocol == model.MTProto {
-@@ -273,7 +293,7 @@ func (l *Local) updateTuicInbound(ctx context.Context, oldIb, newIb *model.Inbound) error {
+@@ -273,6 +293,6 @@ func (l *Local) updateTuicInbound(ctx context.Context, oldIb, newIb *model.Inbound) error {
  }
  
  func (l *Local) AddUser(_ context.Context, ib *model.Inbound, userMap map[string]any) error {
@@ -588,7 +588,7 @@ diff --git a/internal/web/runtime/local.go b/internal/web/runtime/local.go
 +	if ib.Protocol == model.MTProto || ib.Protocol == model.AmneziaWG || ib.Protocol == model.TUIC || ib.Protocol == model.TgWeb {
  		return nil
  	}
-@@ -282,7 +302,7 @@ func (l *Local) AddUser(_ context.Context, ib *model.Inbound, userMap map[string]any) error {
+@@ -282,6 +302,6 @@ func (l *Local) AddUser(_ context.Context, ib *model.Inbound, userMap map[string]any) error {
  }
  
  func (l *Local) RemoveUser(_ context.Context, ib *model.Inbound, email string) error {
@@ -600,7 +600,7 @@ diff --git a/internal/web/runtime/local.go b/internal/web/runtime/local.go
 diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service/client_inbound_apply.go
 --- a/internal/web/service/client_inbound_apply.go
 +++ b/internal/web/service/client_inbound_apply.go
-@@ -466,6 +466,10 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model.Inbound) (bool, error) {
+@@ -466,4 +466,8 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model.Inbound) (bool, error) {
  			if client.AdTag != "" && !model.ValidMtprotoAdTag(client.AdTag) {
  				return false, common.NewError("mtproto client ad tag must be 32 hex characters")
  			}
@@ -609,7 +609,7 @@ diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service
 +				return false, common.NewError("tgweb client requires an email")
 +			}
  		case "tuic":
-@@ -584,7 +588,9 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model.Inbound) (bool, error) {
+@@ -584,5 +588,7 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model.Inbound) (bool, error) {
  	if oldInbound.NodeID == nil {
  		if !push {
  			needRestart = true
@@ -628,7 +628,7 @@ diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service
  		newClientId = clients[0].ID
  	}
 
-@@ -1019,7 +1027,9 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
+@@ -1019,6 +1027,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
  	if len(oldEmail) > 0 {
  		if oldInbound.NodeID == nil {
  			if !push {
@@ -638,7 +638,7 @@ diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service
 +				// Desired state is reconciled asynchronously.
 +			} else if oldInbound.Protocol == model.MTProto {
  				inboundSvc.applyLocalMtproto(oldInbound.Id)
-@@ -1207,7 +1217,9 @@ func (s *ClientService) DeleteInboundClient(inboundSvc *InboundService, id int, email string) (bool, error) {
+@@ -1207,6 +1217,8 @@ func (s *ClientService) DeleteInboundClient(inboundSvc *InboundService, id int, email string) (bool, error) {
  	if len(email) > 0 {
  		if oldInbound.NodeID == nil {
 -			if oldInbound.Protocol == model.MTProto {
@@ -666,7 +666,7 @@ diff --git a/internal/web/service/inbound_tgweb_client_test.go b/internal/web/se
 new file mode 100644
 --- /dev/null
 +++ b/internal/web/service/inbound_tgweb_client_test.go
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,55 @@
 +package service
 +
 +import (
