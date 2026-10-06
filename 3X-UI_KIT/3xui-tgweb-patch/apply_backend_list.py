@@ -34,7 +34,7 @@ rw("internal/web/service/client_paging.go",
 	Traffic             *xray.ClientTraffic `json:"traffic,omitempty"`''')
 rw("internal/web/service/client_paging.go",
 '''	trafficByEmail := make(map[string]*xray.ClientTraffic, len(emails))''',
-'''	externalAttachments, err := s.externalInboundMap(ids)
+'''	externalAttachments, err := (&ClientService{}).externalInboundMap(ids)
 	if err != nil {
 		return nil, err
 	}
