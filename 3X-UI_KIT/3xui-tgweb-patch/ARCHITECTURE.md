@@ -213,7 +213,7 @@ TgWeb usage is counted exactly once in the aggregate.
 
 ## SNI routing
 
-The production-facing flow is:
+The production-facing flow uses two nginx layers in the same nginx process/configuration role:
 
 ```text
 Telegram WebProxy client
@@ -224,14 +224,33 @@ MAIN :443
     |
 nginx stream + ssl_preread
     |
+local TLS terminator for web.maicraft.tech
+    |
+HTTP / WebSocket reverse proxy
+    |
 127.0.0.1:4600
     |
-tgwebproxy-multi
+tgwebproxy-multi (behind_proxy=true)
 ```
 
-This requires TgWeb client traffic to expose a TLS ClientHello with the expected SNI before any TLS termination. The patchset must include a pre-deployment verification procedure for this assumption.
+Important: with `behind_proxy=true`, `tgwebproxy-multi` on `127.0.0.1:4600` serves plaintext HTTP/WebSocket. The stream SNI router must therefore **not** forward raw TLS directly to port 4600.
 
-The 3x-ui patch does not modify nginx. Production nginx changes remain a separate, explicitly approved deployment step.
+A typical shape is:
+
+```text
+:443 stream SNI router
+  web.maicraft.tech -> 127.0.0.1:<local TLS vhost port>
+                              |
+                              | nginx ssl server
+                              v
+                        http://127.0.0.1:4600
+```
+
+The TLS vhost must preserve the original `Host`, forward WebSocket Upgrade/Connection headers, preserve the query string for the upstream request, and avoid logging the capability-bearing query string.
+
+An alternative future mode is raw TLS passthrough directly to TgWeb, but only if TgWeb is run with `behind_proxy=false` and owns its certificate/TLS listener on a private local port. That is not the selected phase-1 deployment.
+
+The 3x-ui patch does not modify production nginx. A reference nginx fragment may be shipped with the patchset, but applying it to MAIN remains a separate, explicitly approved deployment step.
 
 ## Client CRUD / attachment behavior
 
