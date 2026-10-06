@@ -54,7 +54,7 @@ tgweb_sync_user() { # name; preserve secret if it already exists
   [[ $TGWEB_ENABLED == yes ]] || return 0
   local name=$1 rec all used total exp enabled quota payload
   rec=$(client "$name"); [[ -n $rec ]] || return 0
-  all=$(tgweb_clients)
+  all=$(tgweb_clients | jq -c 'map(select(.name != "_bootstrap"))')
   used=$(jq -r '(.traffic.up // 0) + (.traffic.down // 0)' <<<"$rec")
   total=$(jq -r '.totalGB // 0' <<<"$rec")
   exp=$(jq -r '.expiryTime // 0' <<<"$rec")
