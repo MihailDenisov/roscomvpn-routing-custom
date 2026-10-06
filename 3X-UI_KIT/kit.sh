@@ -123,6 +123,12 @@ tgweb_policy_enabled() {
   local rec comment
   rec=$(client "$1")
   [[ -n $rec ]] || return 1
+  if jq -e 'has("externalInboundKeys")' <<<"$rec" >/dev/null; then
+    jq -e '(.externalInboundKeys // []) | index("tgweb") != null' <<<"$rec" >/dev/null
+    return
+  fi
+  # Transitional compatibility with an unpatched panel. Once the DB migration
+  # has completed, externalInboundKeys is authoritative and this path is unused.
   comment=$(jq -r '.comment // ""' <<<"$rec")
   [[ $comment != *"[tgweb:off]"* ]]
 }
@@ -356,25 +362,41 @@ cmd_web() {
   local name=${1:-} state=${2:-} rec comment next
   valid_name "$name"
   rec=$(client "$name"); [[ -n $rec ]] || die "Нет пользователя $name"
-  comment=$(jq -r '.comment // ""' <<<"$rec")
-  case "$state" in
-    on)
-      next=$(sed -E 's/[[:space:]]*\[tgweb:off\][[:space:]]*/ /g; s/^ +| +$//g; s/  +/ /g' <<<"$comment")
-      ;;
-    off)
-      if [[ $comment == *"[tgweb:off]"* ]]; then next=$comment
-      elif [[ -n $comment ]]; then next="$comment [tgweb:off]"
-      else next="[tgweb:off]"
-      fi
-      ;;
-    *) die "Использование: kit user web имя on|off" ;;
-  esac
-  update_user "$name" ".comment = \$c" --arg c "$next"
+
+  if jq -e 'has("externalInboundKeys")' <<<"$rec" >/dev/null; then
+    case "$state" in
+      on)
+        api POST "clients/$name/attach" '{"externalInboundKeys":["tgweb"]}' >/dev/null
+        ;;
+      off)
+        api POST "clients/$name/detach" '{"externalInboundKeys":["tgweb"]}' >/dev/null
+        ;;
+      *) die "Использование: kit user web имя on|off" ;;
+    esac
+  else
+    # Transitional fallback for an installation where the 3x-ui patch has not
+    # been deployed yet. The migration converts this marker into desired state.
+    comment=$(jq -r '.comment // ""' <<<"$rec")
+    case "$state" in
+      on)
+        next=$(sed -E 's/[[:space:]]*\[tgweb:off\][[:space:]]*/ /g; s/^ +| +$//g; s/  +/ /g' <<<"$comment")
+        ;;
+      off)
+        if [[ $comment == *"[tgweb:off]"* ]]; then next=$comment
+        elif [[ -n $comment ]]; then next="$comment [tgweb:off]"
+        else next="[tgweb:off]"
+        fi
+        ;;
+      *) die "Использование: kit user web имя on|off" ;;
+    esac
+    update_user "$name" ".comment = \$c" --arg c "$next"
+  fi
+
   tgweb_sync_user "$name"
   if [[ $state == on ]]; then
     say "TgWebProxy для $name включён."
   else
-    say "TgWebProxy для $name выключен. В 3x-ui это отмечено [tgweb:off] в Comment."
+    say "TgWebProxy для $name выключен."
   fi
 }
 
