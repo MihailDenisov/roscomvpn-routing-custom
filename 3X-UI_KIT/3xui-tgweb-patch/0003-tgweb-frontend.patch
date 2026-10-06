@@ -87,7 +87,7 @@ diff --git a/frontend/src/schemas/protocols/inbound/index.ts b/frontend/src/sche
 diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/inbound-defaults.ts
 --- a/frontend/src/lib/xray/inbound-defaults.ts
 +++ b/frontend/src/lib/xray/inbound-defaults.ts
-@@ -1,412 +1,424 @@
+@@ -1,411 +1,423 @@
 -import { RandomUtil, Wireguard } from '@/utils';
 -import { generateAwgObfuscation } from '@/lib/xray/amneziawg-obfuscation';
 -
@@ -499,7 +499,6 @@ diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/i
 -      return null;
 -  }
 -}
--
 +import { RandomUtil, Wireguard } from '@/utils';
 +import { generateAwgObfuscation } from '@/lib/xray/amneziawg-obfuscation';
 +
@@ -923,7 +922,6 @@ diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/i
 +      return null;
 +  }
 +}
-+
 diff --git a/frontend/src/pages/inbounds/form/protocols/tgweb.tsx b/frontend/src/pages/inbounds/form/protocols/tgweb.tsx
 new file mode 100644
 --- /dev/null
@@ -970,7 +968,7 @@ diff --git a/frontend/src/pages/inbounds/form/protocols/index.ts b/frontend/src/
 diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/src/pages/inbounds/form/InboundFormModal.tsx
 --- a/frontend/src/pages/inbounds/form/InboundFormModal.tsx
 +++ b/frontend/src/pages/inbounds/form/InboundFormModal.tsx
-@@ -1,1212 +1,1227 @@
+@@ -1,1211 +1,1226 @@
 -import { useEffect, useRef, useState } from 'react';
 -import { useTranslation } from 'react-i18next';
 -import { QuestionCircleOutlined } from '@ant-design/icons';
@@ -2182,7 +2180,6 @@ diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/sr
 -    </>
 -  );
 -}
--
 +import { useEffect, useRef, useState } from 'react';
 +import { useTranslation } from 'react-i18next';
 +import { QuestionCircleOutlined } from '@ant-design/icons';
@@ -3409,7 +3406,6 @@ diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/sr
 +    </>
 +  );
 +}
-+
 diff --git a/frontend/src/pages/inbounds/useInbounds.ts b/frontend/src/pages/inbounds/useInbounds.ts
 --- a/frontend/src/pages/inbounds/useInbounds.ts
 +++ b/frontend/src/pages/inbounds/useInbounds.ts
