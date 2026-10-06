@@ -43,7 +43,7 @@ diff --git a/frontend/src/schemas/protocols/inbound/tgweb.ts b/frontend/src/sche
 new file mode 100644
 --- /dev/null
 +++ b/frontend/src/schemas/protocols/inbound/tgweb.ts
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,22 @@
 +import { z } from 'zod';
 +
 +export const TgwebClientSchema = z
@@ -66,7 +66,6 @@ new file mode 100644
 +
 +export type TgwebClient = z.infer<typeof TgwebClientSchema>;
 +export type TgwebInboundSettings = z.infer<typeof TgwebInboundSettingsSchema>;
-+
 diff --git a/frontend/src/schemas/protocols/inbound/index.ts b/frontend/src/schemas/protocols/inbound/index.ts
 --- a/frontend/src/schemas/protocols/inbound/index.ts
 +++ b/frontend/src/schemas/protocols/inbound/index.ts
@@ -149,7 +148,7 @@ diff --git a/frontend/src/pages/inbounds/form/protocols/tgweb.tsx b/frontend/src
 new file mode 100644
 --- /dev/null
 +++ b/frontend/src/pages/inbounds/form/protocols/tgweb.tsx
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,30 @@
 +import { Alert, Input, InputNumber } from 'antd';
 +
 +import { FormField } from '@/components/form/rhf';
@@ -180,7 +179,6 @@ new file mode 100644
 +    </>
 +  );
 +}
-+
 diff --git a/frontend/src/pages/inbounds/form/protocols/index.ts b/frontend/src/pages/inbounds/form/protocols/index.ts
 --- a/frontend/src/pages/inbounds/form/protocols/index.ts
 +++ b/frontend/src/pages/inbounds/form/protocols/index.ts
