@@ -197,6 +197,7 @@ if [[ -f "$(dirname "$0")/kit.sh" ]]; then
   cp -a /usr/local/bin/kit "/usr/local/bin/kit.pre-tgweb.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
   install -m 0755 "$(dirname "$0")/kit.sh" /usr/local/bin/kit
   bash -n /usr/local/bin/kit
+  /usr/local/bin/kit user sync --all
 fi
 
 # Update kit-sub so the personal HTML page can show the user's TgWeb link.
