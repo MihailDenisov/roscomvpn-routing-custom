@@ -306,7 +306,7 @@ diff --git a/frontend/src/pages/inbounds/useInbounds.ts b/frontend/src/pages/inb
 diff --git a/frontend/src/pages/clients/ClientFormModal.tsx b/frontend/src/pages/clients/ClientFormModal.tsx
 --- a/frontend/src/pages/clients/ClientFormModal.tsx
 +++ b/frontend/src/pages/clients/ClientFormModal.tsx
-@@ -64,4 +64,5 @@ const MULTI_CLIENT_PROTOCOLS = new Set([
+@@ -65,4 +65,5 @@ const MULTI_CLIENT_PROTOCOLS = new Set([
    'mtproto',
    'amneziawg',
    'tuic',
@@ -316,7 +316,7 @@ diff --git a/frontend/src/pages/clients/ClientFormModal.tsx b/frontend/src/pages
 diff --git a/frontend/src/pages/clients/BulkAttachInboundsModal.tsx b/frontend/src/pages/clients/BulkAttachInboundsModal.tsx
 --- a/frontend/src/pages/clients/BulkAttachInboundsModal.tsx
 +++ b/frontend/src/pages/clients/BulkAttachInboundsModal.tsx
-@@ -16,4 +16,5 @@ const MULTI_USER_PROTOCOLS = new Set([
+@@ -17,4 +17,5 @@ const MULTI_USER_PROTOCOLS = new Set([
    'mtproto',
    'amneziawg',
    'tuic',
@@ -326,7 +326,7 @@ diff --git a/frontend/src/pages/clients/BulkAttachInboundsModal.tsx b/frontend/s
 diff --git a/frontend/src/pages/clients/BulkDetachInboundsModal.tsx b/frontend/src/pages/clients/BulkDetachInboundsModal.tsx
 --- a/frontend/src/pages/clients/BulkDetachInboundsModal.tsx
 +++ b/frontend/src/pages/clients/BulkDetachInboundsModal.tsx
-@@ -16,4 +16,5 @@ const MULTI_USER_PROTOCOLS = new Set([
+@@ -17,4 +17,5 @@ const MULTI_USER_PROTOCOLS = new Set([
    'mtproto',
    'amneziawg',
    'tuic',
