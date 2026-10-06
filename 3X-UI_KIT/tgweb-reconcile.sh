@@ -51,18 +51,23 @@ changed=no
 # TgWeb clients are keyed by the primary kit email. AmneziaWG shadow records
 # contribute usage but never get their own TgWeb capability.
 while IFS= read -r name; do
-  [[ -n $name && $name != _bootstrap ]] || continue
+  [[ -n $name ]] || continue
   primary=$(jq -c --arg n "$name" 'map(select(.email == $n))[0] // empty' <<<"$xc")
   [[ -n $primary ]] || continue
 
   total=$(jq -r '.totalGB // 0' <<<"$primary")
   expiry=$(jq -r '.expiryTime // 0' <<<"$primary")
   panel_enabled=$(jq -r '.enable // false' <<<"$primary")
+  comment=$(jq -r '.comment // ""' <<<"$primary")
+  policy_enabled=true
+  [[ $comment == *"[tgweb:off]"* ]] && policy_enabled=false
   vpn_used=$(jq -r --arg n "$name" '[.[] | select(.email == $n or (.email | test("^" + $n + "-awg[0-9]*$"))) | ((.traffic.up // 0) + (.traffic.down // 0))] | add // 0' <<<"$xc")
-  web_used=$(jq -r --arg n "$name" 'map(select(.name == $n))[0] | ((.bytes_up // 0) + (.bytes_down // 0))' <<<"$wc")
+  existing=$(jq -c --arg n "$name" 'map(select(.name == $n))[0] // empty' <<<"$wc")
+  web_used=$(jq -r --arg n "$name" 'map(select(.name == $n))[0] | ((.bytes_up // 0) + (.bytes_down // 0)) // 0' <<<"$wc")
 
   allowed=true
   [[ $panel_enabled == true ]] || allowed=false
+  [[ $policy_enabled == true ]] || allowed=false
   ((expiry == 0 || expiry > now_ms)) || allowed=false
   if ((total > 0 && vpn_used + web_used >= total)); then
     allowed=false
@@ -77,8 +82,14 @@ while IFS= read -r name; do
     ((web_quota < 1)) && web_quota=1
   fi
   exp_s=0; ((expiry > 0)) && exp_s=$((expiry / 1000))
-  wc_new=$(jq -c --arg n "$name" --argjson e "$allowed" --argjson x "$exp_s" --argjson q "$web_quota" '
-    map(if .name == $n then .enabled=$e | .expires_unix=$x | .quota_bytes=$q else . end)' <<<"$wc")
+  if [[ -n $existing ]]; then
+    wc_new=$(jq -c --arg n "$name" --argjson e "$allowed" --argjson x "$exp_s" --argjson q "$web_quota" '
+      map(if .name == $n then .enabled=$e | .expires_unix=$x | .quota_bytes=$q else . end)' <<<"$wc")
+  else
+    secret=$(openssl rand -hex 16)
+    wc_new=$(jq -c --arg n "$name" --arg s "$secret" --argjson e "$allowed" --argjson x "$exp_s" --argjson q "$web_quota" '
+      map(select(.name != "_bootstrap")) + [{name:$n,secret:$s,enabled:$e,expires_unix:$x,quota_bytes:$q}]' <<<"$wc")
+  fi
   if [[ $wc_new != "$wc" ]]; then wc=$wc_new; changed=yes; fi
 
   # If WEB usage exhausted the shared allowance, stop all 3x-ui transports too.
@@ -90,6 +101,6 @@ while IFS= read -r name; do
       xpost "clients/update/$email" "$body"
     done < <(jq -r --arg n "$name" '.[] | select(.email == $n or (.email | test("^" + $n + "-awg[0-9]*$"))) | .email' <<<"$xc")
   fi
-done < <(jq -r '.[].name' <<<"$wc")
+done < <(jq -r '.[] | select(.subId != null) | .email | select(test("-awg[0-9]*$") | not)' <<<"$xc" | sort -u)
 
 [[ $changed == yes ]] && wput_clients "$wc"
