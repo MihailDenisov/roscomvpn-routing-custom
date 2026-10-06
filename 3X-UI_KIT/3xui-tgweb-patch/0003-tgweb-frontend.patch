@@ -1,0 +1,307 @@
+From 0000000000000000000000000000000000000003 Mon Sep 17 00:00:00 2001
+From: 3x-ui TgWeb patchset
+Date: Tue, 6 Oct 2026 00:00:02 +0300
+Subject: [PATCH 3/3] frontend: add portless Telegram WebProxy inbound form
+
+Baseline: MHSanaei/3x-ui@6be3c438e1420f24dd10060f8a1dd620b2d0e73b
+Requires: 0001 and 0002.
+
+TgWeb is exposed as a normal inbound choice while keeping Xray-only controls
+hidden. Its public endpoint is metadata for link generation; the actual socket
+is owned by nginx SNI routing + tgwebproxy-multi.
+
+diff --git a/frontend/src/schemas/primitives/protocol.ts b/frontend/src/schemas/primitives/protocol.ts
+--- a/frontend/src/schemas/primitives/protocol.ts
++++ b/frontend/src/schemas/primitives/protocol.ts
+@@ -12,6 +12,7 @@ export const ProtocolSchema = z.enum([
+   'mtproto',
+   'amneziawg',
+   'tuic',
++  'tgweb',
+ ]);
+@@ -35,6 +36,7 @@ export const Protocols = Object.freeze({
+   MTPROTO: 'mtproto',
+   AMNEZIAWG: 'amneziawg',
+   TUIC: 'tuic',
++  TGWEB: 'tgweb',
+ });
+
+diff --git a/frontend/src/generated/zod.ts b/frontend/src/generated/zod.ts
+--- a/frontend/src/generated/zod.ts
++++ b/frontend/src/generated/zod.ts
+@@ -1,1 +1,1 @@
+-  protocol: z.enum(['vmess', 'vless', 'trojan', 'shadowsocks', 'wireguard', 'hysteria', 'http', 'mixed', 'tunnel', 'tun', 'mtproto', 'amneziawg', 'tuic']),
++  protocol: z.enum(['vmess', 'vless', 'trojan', 'shadowsocks', 'wireguard', 'hysteria', 'http', 'mixed', 'tunnel', 'tun', 'mtproto', 'amneziawg', 'tuic', 'tgweb']),
+
+diff --git a/frontend/src/schemas/protocols/inbound/tgweb.ts b/frontend/src/schemas/protocols/inbound/tgweb.ts
+new file mode 100644
+--- /dev/null
++++ b/frontend/src/schemas/protocols/inbound/tgweb.ts
+@@ -0,0 +1,25 @@
++import { z } from 'zod';
++
++export const TgwebClientSchema = z
++  .object({
++    email: z.string().min(1),
++    subId: z.string().default(''),
++    enable: z.boolean().default(true),
++    totalGB: z.number().int().min(0).default(0),
++    expiryTime: z.number().int().default(0),
++    limitIp: z.number().int().min(0).default(0),
++    comment: z.string().default(''),
++  })
++  .passthrough();
++
++export const TgwebInboundSettingsSchema = z.object({
++  publicHost: z.string().trim().min(1).default('web.maicraft.tech'),
++  publicPort: z.number().int().min(1).max(65535).default(443),
++  clients: z.array(TgwebClientSchema).default([]),
++});
++
++export type TgwebClient = z.infer<typeof TgwebClientSchema>;
++export type TgwebInboundSettings = z.infer<typeof TgwebInboundSettingsSchema>;
++
+diff --git a/frontend/src/schemas/protocols/inbound/index.ts b/frontend/src/schemas/protocols/inbound/index.ts
+--- a/frontend/src/schemas/protocols/inbound/index.ts
++++ b/frontend/src/schemas/protocols/inbound/index.ts
+@@ -8,6 +8,7 @@ import { ShadowsocksInboundSettingsSchema } from './shadowsocks';
+ import { TrojanInboundSettingsSchema } from './trojan';
+ import { TuicInboundSettingsSchema } from './tuic';
++import { TgwebInboundSettingsSchema } from './tgweb';
+ import { TunInboundSettingsSchema } from './tun';
+@@ -21,6 +22,7 @@ export * from './trojan';
+ export * from './tuic';
++export * from './tgweb';
+ export * from './tun';
+@@ -42,6 +44,7 @@ export const InboundSettingsSchema = z.discriminatedUnion('protocol', [
+   z.object({ protocol: z.literal('amneziawg'), settings: AmneziawgInboundSettingsSchema }),
+   z.object({ protocol: z.literal('tuic'), settings: TuicInboundSettingsSchema }),
++  z.object({ protocol: z.literal('tgweb'), settings: TgwebInboundSettingsSchema }),
+ ]);
+
+diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/inbound-defaults.ts
+--- a/frontend/src/lib/xray/inbound-defaults.ts
++++ b/frontend/src/lib/xray/inbound-defaults.ts
+@@ -13,6 +13,7 @@ import type { TrojanClient, TrojanInboundSettings } from '@/schemas/protocols/inbound/trojan';
+ import type { TuicClient, TuicInboundSettings } from '@/schemas/protocols/inbound/tuic';
++import type { TgwebInboundSettings } from '@/schemas/protocols/inbound/tgweb';
+@@ -260,6 +261,13 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
+   };
+ }
+ 
++export function createDefaultTgwebInboundSettings(): TgwebInboundSettings {
++  return {
++    publicHost: 'web.maicraft.tech',
++    publicPort: 443,
++    clients: [],
++  };
++}
++
+@@ -283,6 +291,7 @@ export type AnyInboundSettings =
+   | MtprotoInboundSettings
+   | AmneziawgInboundSettings
+-  | TuicInboundSettings;
++  | TuicInboundSettings
++  | TgwebInboundSettings;
+@@ -311,6 +320,8 @@ export function createDefaultInboundSettings(protocol: string): AnyInboundSettings | null {
+     case 'tuic':
+       return createDefaultTuicInboundSettings();
++    case 'tgweb':
++      return createDefaultTgwebInboundSettings();
+     default:
+       return null;
+
+diff --git a/frontend/src/lib/xray/protocol-capabilities.ts b/frontend/src/lib/xray/protocol-capabilities.ts
+--- a/frontend/src/lib/xray/protocol-capabilities.ts
++++ b/frontend/src/lib/xray/protocol-capabilities.ts
+@@ -80,7 +80,8 @@ export function canEnableSniffing(values: { protocol: string }): boolean {
+     values.protocol !== 'mtproto' &&
+     values.protocol !== 'amneziawg' &&
+-    values.protocol !== 'tuic'
++    values.protocol !== 'tuic' &&
++    values.protocol !== 'tgweb'
+   );
+ }
+
+diff --git a/frontend/src/pages/inbounds/form/protocols/tgweb.tsx b/frontend/src/pages/inbounds/form/protocols/tgweb.tsx
+new file mode 100644
+--- /dev/null
++++ b/frontend/src/pages/inbounds/form/protocols/tgweb.tsx
+@@ -0,0 +1,34 @@
++import { Alert, Input, InputNumber } from 'antd';
++
++import { FormField } from '@/components/form/rhf';
++
++export default function TgwebFields() {
++  return (
++    <>
++      <Alert
++        type="info"
++        showIcon
++        message="External Telegram WebProxy"
++        description="Published via SNI routing. This inbound does not create an Xray listener."
++      />
++      <FormField
++        name={['settings', 'publicHost']}
++        label="Public host"
++        tooltip="Hostname advertised to Telegram clients and routed by the external SNI edge."
++      >
++        <Input placeholder="web.maicraft.tech" />
++      </FormField>
++      <FormField
++        name={['settings', 'publicPort']}
++        label="Public port"
++        tooltip="Public HTTPS port advertised to Telegram clients. The local TgWeb backend remains private."
++      >
++        <InputNumber min={1} max={65535} style={{ width: '100%' }} />
++      </FormField>
++    </>
++  );
++}
++
+diff --git a/frontend/src/pages/inbounds/form/protocols/index.ts b/frontend/src/pages/inbounds/form/protocols/index.ts
+--- a/frontend/src/pages/inbounds/form/protocols/index.ts
++++ b/frontend/src/pages/inbounds/form/protocols/index.ts
+@@ -10,3 +10,4 @@ export { default as VlessFields } from './vless';
+ export { default as AmneziawgFields } from './amneziawg';
+ export { default as TuicFields } from './tuic';
++export { default as TgwebFields } from './tgweb';
+
+diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/src/pages/inbounds/form/InboundFormModal.tsx
+--- a/frontend/src/pages/inbounds/form/InboundFormModal.tsx
++++ b/frontend/src/pages/inbounds/form/InboundFormModal.tsx
+@@ -68,6 +68,7 @@ import {
+   MtprotoFields,
+   ShadowsocksFields,
++  TgwebFields,
+   TuicFields,
+@@ -283,7 +284,8 @@ export default function InboundFormModal({
+     protocol !== Protocols.HYSTERIA &&
+     protocol !== Protocols.WIREGUARD &&
+     protocol !== Protocols.TUNNEL &&
+-    protocol !== Protocols.TUIC;
++    protocol !== Protocols.TUIC &&
++    protocol !== Protocols.TGWEB;
+@@ -503,7 +505,7 @@ export default function InboundFormModal({
+-    if (protocol === Protocols.MTPROTO) {
++    if (protocol === Protocols.MTPROTO || protocol === Protocols.TGWEB) {
+       if (current !== 'listen') setV('shareAddrStrategy', 'listen');
+       if (getV('shareAddr')) setV('shareAddr', '');
+       return;
+@@ -532,7 +534,13 @@ export default function InboundFormModal({
+       if (next !== Protocols.VLESS) {
+         setV('disableFlow', false);
+       }
+-      if (next === Protocols.HYSTERIA) {
++      if (next === Protocols.TGWEB) {
++        setV('port', 0);
++        setV('listen', '');
++        setV('shareAddrStrategy', 'listen');
++        setV('shareAddr', '');
++        setV('streamSettings', undefined);
++      } else if (next === Protocols.HYSTERIA) {
+         setV('streamSettings', {
+@@ -648,12 +656,14 @@ export default function InboundFormModal({
+         <Select id="protocol" disabled={mode === 'edit'} options={PROTOCOL_OPTIONS} />
+       </FormField>
+ 
+-      <FormField
+-        name="listen"
+-        label={labelWithHint(t('pages.inbounds.address'), t('pages.inbounds.form.listenHelp'))}
+-      >
+-        <Input placeholder={t('pages.inbounds.monitorDesc')} />
+-      </FormField>
++      {protocol !== Protocols.TGWEB && (
++        <FormField
++          name="listen"
++          label={labelWithHint(t('pages.inbounds.address'), t('pages.inbounds.form.listenHelp'))}
++        >
++          <Input placeholder={t('pages.inbounds.monitorDesc')} />
++        </FormField>
++      )}
+ 
+-      {protocol !== Protocols.MTPROTO && (
++      {protocol !== Protocols.MTPROTO && protocol !== Protocols.TGWEB && (
+@@ -727,13 +737,15 @@ export default function InboundFormModal({
+-      <FormField
+-        name="port"
+-        label={t('pages.inbounds.port')}
+-        rules={{ validate: rhfZodValidate(InboundFormBaseSchema.shape.port) }}
+-      >
+-        <InputNumber min={isUdsListen ? 0 : 1} max={65535} />
+-      </FormField>
++      {protocol !== Protocols.TGWEB && (
++        <FormField
++          name="port"
++          label={t('pages.inbounds.port')}
++          rules={{ validate: rhfZodValidate(InboundFormBaseSchema.shape.port) }}
++        >
++          <InputNumber min={isUdsListen ? 0 : 1} max={65535} />
++        </FormField>
++      )}
+@@ -816,6 +828,8 @@ export default function InboundFormModal({
+       {protocol === Protocols.TUIC && <TuicFields />}
+ 
++      {protocol === Protocols.TGWEB && <TgwebFields />}
++
+       {protocol === Protocols.TUN && <TunFields />}
+@@ -1154,6 +1168,7 @@ export default function InboundFormModal({
+                     Protocols.MTPROTO,
+                     Protocols.AMNEZIAWG,
+                     Protocols.TUIC,
++                    Protocols.TGWEB,
+                   ] as string[]
+
+diff --git a/frontend/src/pages/inbounds/useInbounds.ts b/frontend/src/pages/inbounds/useInbounds.ts
+--- a/frontend/src/pages/inbounds/useInbounds.ts
++++ b/frontend/src/pages/inbounds/useInbounds.ts
+@@ -68,6 +68,7 @@ const TRACKED_PROTOCOLS: readonly string[] = [
+   Protocols.MTPROTO,
+   Protocols.AMNEZIAWG,
+   Protocols.TUIC,
++  Protocols.TGWEB,
+ ];
+
+diff --git a/frontend/src/test/tgweb-inbound-form.test.ts b/frontend/src/test/tgweb-inbound-form.test.ts
+new file mode 100644
+--- /dev/null
++++ b/frontend/src/test/tgweb-inbound-form.test.ts
+@@ -0,0 +1,37 @@
++import { describe, expect, it } from 'vitest';
++
++import { createDefaultInboundSettings } from '@/lib/xray/inbound-defaults';
++import { canEnableSniffing, canEnableStream } from '@/lib/xray/protocol-capabilities';
++import { InboundSettingsSchema } from '@/schemas/protocols/inbound';
++import { ProtocolSchema } from '@/schemas/primitives/protocol';
++
++describe('tgweb inbound', () => {
++  it('is a recognized protocol with external defaults', () => {
++    expect(ProtocolSchema.parse('tgweb')).toBe('tgweb');
++    expect(createDefaultInboundSettings('tgweb')).toEqual({
++      publicHost: 'web.maicraft.tech',
++      publicPort: 443,
++      clients: [],
++    });
++  });
++
++  it('parses its settings branch', () => {
++    expect(
++      InboundSettingsSchema.parse({
++        protocol: 'tgweb',
++        settings: {
++          publicHost: 'web.maicraft.tech',
++          publicPort: 443,
++          clients: [],
++        },
++      }),
++    ).toMatchObject({
++      protocol: 'tgweb',
++      settings: { publicHost: 'web.maicraft.tech', publicPort: 443 },
++    });
++  });
++
++  it('has no Xray stream or sniffing controls', () => {
++    expect(canEnableStream({ protocol: 'tgweb' })).toBe(false);
++    expect(canEnableSniffing({ protocol: 'tgweb' })).toBe(false);
++  });
++});
