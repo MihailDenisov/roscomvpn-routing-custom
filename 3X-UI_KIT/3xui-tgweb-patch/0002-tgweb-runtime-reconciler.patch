@@ -627,7 +627,6 @@ diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service
  	default:
  		newClientId = clients[0].ID
  	}
-
 @@ -1019,6 +1027,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
  	if len(oldEmail) > 0 {
  		if oldInbound.NodeID == nil {
