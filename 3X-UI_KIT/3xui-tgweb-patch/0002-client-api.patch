@@ -1,0 +1,102 @@
+diff --git a/internal/web/service/client.go b/internal/web/service/client.go
+--- a/internal/web/service/client.go
++++ b/internal/web/service/client.go
+@@
+ type ClientWithAttachments struct {
+ 	model.ClientRecord
+-	InboundIds []int               `json:"inboundIds"`
+-	Traffic    *xray.ClientTraffic `json:"traffic,omitempty"`
++	InboundIds          []int               `json:"inboundIds"`
++	ExternalInboundKeys []string            `json:"externalInboundKeys"`
++	Traffic             *xray.ClientTraffic `json:"traffic,omitempty"`
+ }
+@@
+ 	extras := struct {
+-		InboundIds []int               `json:"inboundIds"`
+-		Traffic    *xray.ClientTraffic `json:"traffic,omitempty"`
+-	}{InboundIds: c.InboundIds, Traffic: c.Traffic}
++		InboundIds          []int               `json:"inboundIds"`
++		ExternalInboundKeys []string            `json:"externalInboundKeys"`
++		Traffic             *xray.ClientTraffic `json:"traffic,omitempty"`
++	}{InboundIds: c.InboundIds, ExternalInboundKeys: c.ExternalInboundKeys, Traffic: c.Traffic}
+@@
+ type ClientCreatePayload struct {
+-	Client     model.Client           `json:"client"`
+-	InboundIds []int                  `json:"inboundIds"`
+-	LimitHwid  int                    `json:"-"`
+-	Traffic    *ClientPortableTraffic `json:"traffic,omitempty"`
++	Client              model.Client           `json:"client"`
++	InboundIds          []int                  `json:"inboundIds"`
++	ExternalInboundKeys []string               `json:"externalInboundKeys,omitempty"`
++	LimitHwid           int                    `json:"-"`
++	Traffic             *ClientPortableTraffic `json:"traffic,omitempty"`
+ }
+@@
+ 	var raw struct {
+-		Client     json.RawMessage        `json:"client"`
+-		InboundIds []int                  `json:"inboundIds"`
+-		Traffic    *ClientPortableTraffic `json:"traffic"`
++		Client              json.RawMessage        `json:"client"`
++		InboundIds          []int                  `json:"inboundIds"`
++		ExternalInboundKeys []string               `json:"externalInboundKeys"`
++		Traffic             *ClientPortableTraffic `json:"traffic"`
+ 	}
+@@
+ 	p.Client = withHwid.Client
+ 	p.InboundIds = raw.InboundIds
++	p.ExternalInboundKeys = raw.ExternalInboundKeys
+ 	p.LimitHwid = withHwid.LimitHwid
+@@
+ 	return json.Marshal(struct {
+-		Client     clientPayloadWithHwid  `json:"client"`
+-		InboundIds []int                  `json:"inboundIds"`
+-		Traffic    *ClientPortableTraffic `json:"traffic,omitempty"`
++		Client              clientPayloadWithHwid  `json:"client"`
++		InboundIds          []int                  `json:"inboundIds"`
++		ExternalInboundKeys []string               `json:"externalInboundKeys,omitempty"`
++		Traffic             *ClientPortableTraffic `json:"traffic,omitempty"`
+ 	}{
+-		Client:     clientPayloadWithHwid{Client: p.Client, LimitHwid: p.LimitHwid},
+-		InboundIds: p.InboundIds,
+-		Traffic:    p.Traffic,
++		Client:              clientPayloadWithHwid{Client: p.Client, LimitHwid: p.LimitHwid},
++		InboundIds:          p.InboundIds,
++		ExternalInboundKeys: p.ExternalInboundKeys,
++		Traffic:             p.Traffic,
+ 	})
+ }
+diff --git a/internal/web/controller/client.go b/internal/web/controller/client.go
+--- a/internal/web/controller/client.go
++++ b/internal/web/controller/client.go
+@@
+ 	externalLinks, err := a.clientService.GetExternalLinksForRecord(rec.Id)
+@@
+-		"externalLinks":    externalLinks,
++		"externalInboundKeys": externalInboundKeys,
++		"externalLinks":       externalLinks,
+@@
+ type attachDetachBody struct {
+-	InboundIds []int `json:"inboundIds"`
++	InboundIds          []int    `json:"inboundIds"`
++	ExternalInboundKeys []string `json:"externalInboundKeys"`
+ }
+@@
+-	needRestart, err := a.clientService.AttachByEmail(&a.inboundService, email, body.InboundIds)
++	needRestart := false
++	var err error
++	if len(body.InboundIds) > 0 {
++		needRestart, err = a.clientService.AttachByEmail(&a.inboundService, email, body.InboundIds)
++	}
++	if err == nil {
++		err = a.clientService.AttachExternalByEmail(email, body.ExternalInboundKeys)
++	}
+@@
+-	needRestart, err := a.clientService.DetachByEmailMany(&a.inboundService, email, body.InboundIds)
++	needRestart := false
++	var err error
++	if len(body.InboundIds) > 0 {
++		needRestart, err = a.clientService.DetachByEmailMany(&a.inboundService, email, body.InboundIds)
++	}
++	if err == nil {
++		err = a.clientService.DetachExternalByEmail(email, body.ExternalInboundKeys)
++	}
