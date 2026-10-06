@@ -1,97 +1,209 @@
-# 3x-ui TgWeb virtual inbound patch
+# TgWeb integration patchset for 3x-ui
 
-This directory contains a fail-closed patchset for:
+Target baseline:
 
 ```text
-MHSanaei/3x-ui
-d57dcf824b6211201252da137b79029747f142f3
+MHSanaei/3x-ui@6be3c438e1420f24dd10060f8a1dd620b2d0e73b
 ```
 
-It implements TgWeb as a panel-level external attachment with provider key
-`tgweb`. It does not create an `inbounds` record and does not modify Xray
-config generation.
+This directory contains a **development/test patchset only**. It must not be
+deployed to production MAIN without explicit approval.
 
-## Reproducible staging build
+## Architecture
+
+TgWeb is a normal 3x-ui inbound attachment with:
+
+```text
+protocol = tgweb
+port     = 0
+listen   = ""
+```
+
+It uses ordinary `client_inbounds`, but is hard-excluded from Xray.
+
+Public traffic remains:
+
+```text
+Internet :443
+  -> nginx stream ssl_preread
+  -> SNI web.maicraft.tech
+  -> local nginx TLS vhost
+  -> HTTP/WebSocket
+  -> 127.0.0.1:4600
+  -> tgwebproxy-multi (behind_proxy=true)
+```
+
+Admin reconciliation remains loopback-only:
+
+```text
+3x-ui -> http://127.0.0.1:9601/clients
+```
+
+See `ARCHITECTURE.md` and `nginx-sni-reference.conf`.
+
+## Patch order
+
+Apply to a clean checkout of the pinned upstream commit:
 
 ```bash
-git clone https://github.com/MHSanaei/3x-ui.git 3x-ui
-cd 3x-ui
-git checkout d57dcf824b6211201252da137b79029747f142f3
-cd ..
-bash ./3X-UI_KIT/3xui-tgweb-patch/apply.sh ./3x-ui
+git checkout 6be3c438e1420f24dd10060f8a1dd620b2d0e73b
 
-cd 3x-ui
-go test ./internal/web/service/... ./internal/database/...
-! grep -Rni --exclude='*_test.go' -E 'tgweb|Telegram WebProxy|externalInboundKeys' internal/xray
+git apply --check 0001-tgweb-protocol-isolation.patch
+git apply 0001-tgweb-protocol-isolation.patch
 
+git apply --check 0002-tgweb-runtime-reconciler.patch
+git apply 0002-tgweb-runtime-reconciler.patch
+
+git apply --check 0003-tgweb-frontend.patch
+git apply 0003-tgweb-frontend.patch
+```
+
+Do not continue if any `--check` fails. Rebase the patchset against the new
+upstream explicitly instead of forcing hunks.
+
+## Runtime configuration
+
+Patch 0002 defaults to:
+
+```text
+admin URL  = http://127.0.0.1:9601
+token file = /etc/tgwebproxy/admin.token
+```
+
+Optional server-side overrides:
+
+```bash
+XUI_TGWEB_ADMIN=http://127.0.0.1:9601
+XUI_TGWEB_TOKEN_FILE=/etc/tgwebproxy/admin.token
+```
+
+The implementation rejects a non-loopback admin URL and never serializes the
+admin token into frontend/API data.
+
+The TgWeb inbound itself stores only public metadata, e.g.:
+
+```json
+{
+  "publicHost": "web.maicraft.tech",
+  "publicPort": 443,
+  "clients": []
+}
+```
+
+Runtime client secrets remain owned by tgwebproxy-multi.
+
+## Tests
+
+Backend safety and runtime tests:
+
+```bash
+go test ./internal/tgweb/...
+go test ./internal/web/service/... -run 'TgWeb|Tgweb'
+```
+
+Then run the wider backend suite:
+
+```bash
+go test ./internal/web/service/...
+go test ./internal/web/job/...
+```
+
+Frontend:
+
+```bash
 cd frontend
 npm ci
-npm run typecheck --if-present
-npm test -- --run
+npm test -- --run src/test/tgweb-inbound-form.test.ts
 npm run build
-cd ..
-go build ./...
-git diff --binary > ../3x-ui-tgweb.patch
 ```
 
-The GitHub Actions workflow `.github/workflows/3x-ui-tgweb-patch.yml`
-executes the same procedure and uploads the final diff as an artifact.
+Finally build the panel using the upstream project's normal build procedure.
 
-## Migration
+## Mandatory acceptance checks
 
-Run `migrate_legacy.py` against a DB copy first. It is dry-run by default.
+1. Create a TgWeb inbound with public host `web.maicraft.tech`.
+2. Confirm its DB row has `protocol=tgweb`, `port=0`.
+3. Attach an existing client through the standard client inbound selector.
+4. Confirm a normal `client_inbounds` row is created.
+5. Confirm no TgWeb UUID/password/runtime secret is minted in the 3x-ui client record.
+6. Generate Xray config and confirm none of these appear:
+   - `tgweb`
+   - `web.maicraft.tech`
+   - TgWeb runtime secret
+   - TgWeb inbound tag
+7. Attach/detach TgWeb only and confirm Xray restart is not requested.
+8. Stop or firewall the local TgWeb admin API, edit a normal VPN client, and
+   confirm the 3x-ui edit succeeds. Restore TgWeb API and confirm reconciliation
+   catches up.
+9. Detach and reattach an existing TgWeb client and confirm its runtime secret is
+   unchanged.
+10. Verify expiry and shared quota disable TgWeb.
+11. Verify `NAME-awg` / `NAME-awg2` traffic contributes to `NAME` quota but
+    does not produce a separate TgWeb runtime client.
+
+## Traffic accounting note
+
+Patch 0002 intentionally does **not** write TgWeb runtime byte counters into
+3x-ui's `client_traffics` table.
+
+The shared-quota calculation is currently:
+
+```text
+VPN/Xray/AWG usage from 3x-ui DB
++ current TgWeb runtime bytes
+```
+
+This preserves correct enforcement without double counting. A later patch may
+surface TgWeb traffic inside the 3x-ui UI, but it must introduce explicit
+anti-double-count accounting first.
+
+## Migration gate
+
+Do not switch the production reconciler to DB attachment policy until all of
+these are true:
+
+- patched panel binary is built and tested;
+- one `tgweb` inbound exists;
+- existing TgWeb users are mapped:
+  - existing runtime client + no `[tgweb:off]` -> attach;
+  - `[tgweb:off]` -> detached;
+  - no existing runtime client -> detached;
+- existing runtime secrets/counters are unchanged;
+- only after successful mapping remove the legacy marker while preserving the
+  rest of each comment.
+
+During development, current KIT scripts retain a legacy-marker fallback when
+no TgWeb inbound exists.
+
+## SNI deployment gate
+
+`tgwebproxy-multi` currently runs with `behind_proxy=true`, therefore
+`127.0.0.1:4600` is plaintext HTTP/WebSocket.
+
+Never configure stream `ssl_preread` to send raw TLS directly to `:4600`.
+Use the local TLS-vhost hop documented in `nginx-sni-reference.conf`.
+
+Before any production change:
 
 ```bash
-python3 migrate_legacy.py --db /path/to/staging/x-ui.db
+nginx -t
+ss -lntp
 ```
 
-Migration rules:
-
-- `[tgweb:off]` -> detached; only that marker is removed from the comment;
-- matching existing TgWeb client -> attached;
-- no matching TgWeb client -> detached (safe default);
-- AWG shadow identities are ignored;
-- the script performs GET-only access to TgWeb, so it does not rotate secrets
-  or reset counters.
-
-Only after reviewing the dry-run:
-
-```bash
-python3 migrate_legacy.py --db /path/to/staging/x-ui.db --apply
-```
-
-## Runtime behavior
-
-The 3x-ui DB is desired state. TgWebProxy is reconciled runtime state.
-
-- attach persists `provider=tgweb`;
-- detach removes desired attachment but preserves an existing runtime secret and
-  disables it;
-- user disable/expiry/quota exhaustion disables TgWeb;
-- deleted primary clients cause orphan TgWeb credentials to be disabled, never
-  rotated;
-- TgWeb outage does not roll back ordinary Xray/VPN edits.
-
-Bulk virtual attach/detach is intentionally not exposed in phase 1.
+Confirm the local TLS vhost, TgWeb backend and admin port are loopback-only,
+then run the TgWeb deployment probe against the public hostname.
 
 ## Rollback
 
-Before any production installation:
+Before an eventual production rollout, back up the 3x-ui database.
 
-1. back up the 3x-ui database and TgWeb state;
-2. retain the original 3x-ui binary;
-3. keep the current KIT scripts/package as a tagged rollback point.
+To roll back to an unpatched panel:
 
-An unpatched 3x-ui binary ignores the new `client_external_inbounds` table.
-Rollback therefore consists of restoring the previous binary/frontend and KIT
-scripts. The new table may remain in place for a later retry; dropping it is
-optional only after exporting desired attachment state.
+1. disable the TgWeb inbound;
+2. migrate desired attachment state back to legacy KIT policy if needed;
+3. remove/detach the TgWeb inbound and its `client_inbounds` rows;
+4. restore the previous panel binary;
+5. keep tgwebproxy-multi running independently if desired.
 
-Do not delete or rewrite TgWeb runtime clients during rollback. Their secrets
-and usage counters are intentionally owned by TgWebProxy.
-
-## Production guardrail
-
-This patchset does not deploy to `connect.maicraft.tech`, alter nginx, restart
-x-ui/Xray, change MTG/MTProto, modify UFW, or touch live users. Production
-installation requires separate explicit approval.
+An older 3x-ui binary does not understand `protocol=tgweb`; do not leave a
+TgWeb inbound row active when rolling back.
