@@ -38,6 +38,8 @@ PROTOS=(); CREATED=(); OPEN=()
 SINGLE=no
 declare -A INNER=([reality]=10443 [xhttp]=10444 [mtproto]=10445 [web]=10446 [tgweb]=4600 [ws]=10451 [vmess]=10452 [trojan]=10453 [sub]=10460)
 TGWEB_DOMAIN=${TGWEB_DOMAIN:-}
+TGWEB_CERT=${TGWEB_CERT:-}
+TGWEB_KEY=${TGWEB_KEY:-}
 SNI2=""; SNI3=""; PANEL_UPSTREAM_SCHEME="http"
 
 if [[ -t 1 ]]; then
@@ -173,6 +175,9 @@ main() {
   if [[ -n $tgweb_domain ]]; then
     [[ $tgweb_domain =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && $tgweb_domain == *.* ]] || die "--tgweb-domain: укажите корректное DNS-имя"
     TGWEB_DOMAIN=${tgweb_domain,,}
+    [[ -n $TGWEB_CERT && -n $TGWEB_KEY ]] || die "--tgweb-domain требует TGWEB_CERT и TGWEB_KEY (сертификат для этого имени)"
+    [[ -s $TGWEB_CERT && -s $TGWEB_KEY ]] || die "Не найдены TGWEB_CERT/TGWEB_KEY"
+    openssl x509 -in "$TGWEB_CERT" -noout -checkhost "$TGWEB_DOMAIN" >/dev/null 2>&1 || die "TGWEB_CERT не покрывает $TGWEB_DOMAIN"
   fi
   if [[ -n $DOMAIN ]]; then
     [[ $DOMAIN =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && $DOMAIN == *.* ]] || die "--domain: укажите корректное DNS-имя, например connect.example.com"
@@ -973,8 +978,8 @@ NGX
 server {
     listen 127.0.0.1:${INNER[web]} ssl http2 proxy_protocol;
     server_name $TGWEB_DOMAIN;
-    ssl_certificate $CERT;
-    ssl_certificate_key $KEY;
+    ssl_certificate $TGWEB_CERT;
+    ssl_certificate_key $TGWEB_KEY;
     ssl_protocols TLSv1.2 TLSv1.3;
     set_real_ip_from 127.0.0.1;
     real_ip_header proxy_protocol;
@@ -1133,6 +1138,7 @@ usage() {
   --domain имя        отдельный Let's Encrypt сертификат для субдомена, например connect.example.com
                       (существующие example.com / *.example.com не изменяются)
   --tgweb-domain имя   SNI для TgWebProxy на общем TCP/443; backend остаётся на 127.0.0.1:4600
+                      требует TGWEB_CERT=/path/fullchain.pem и TGWEB_KEY=/path/privkey.pem
   --fallback-url URL  обычные HTTPS-запросы на --domain перенаправлять, например https://example.com
   --cert файл --key файл  свой сертификат вместо автоматического Let's Encrypt;
                       тогда --host — имя/IP из сертификата
