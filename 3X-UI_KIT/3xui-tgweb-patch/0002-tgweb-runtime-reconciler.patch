@@ -547,13 +547,13 @@ new file mode 100644
 diff --git a/internal/web/web.go b/internal/web/web.go
 --- a/internal/web/web.go
 +++ b/internal/web/web.go
-@@ -277,4 +277,5 @@ const (
+@@ -300,4 +300,5 @@ const (
  	cadenceMtproto       = "@every 10s"
  	cadenceAmneziaWG     = "@every 10s"
  	cadenceTuic          = "@every 10s"
 +	cadenceTgWeb         = "@every 10s"
  	cadenceClientIPScan  = "@every 10s"
-@@ -321,5 +322,9 @@ func (s *Server) startTask(restartXray bool, loc *time.Location) {
+@@ -350,5 +351,9 @@ func (s *Server) startTask(restartXray bool, loc *time.Location) {
  	_, _ = s.cron.AddJob(cadenceTuic, tuicJob)
  	go tuicJob.Run()
  
@@ -640,7 +640,7 @@ diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service
 +			// Periodic TgWeb reconciliation applies the committed desired state.
 +		} else if oldInbound.Protocol == model.MTProto {
  			inboundSvc.applyLocalMtproto(oldInbound.Id)
-@@ -696,6 +702,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
+@@ -698,6 +704,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
  		newClientId = clients[0].Email
  	case "mtproto":
  		newClientId = clients[0].Email
@@ -649,7 +649,7 @@ diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service
  	default:
  		newClientId = clients[0].ID
  	}
-@@ -1019,6 +1027,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
+@@ -1018,6 +1026,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
  	if len(oldEmail) > 0 {
  		if oldInbound.NodeID == nil {
  			if !push {
