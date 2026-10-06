@@ -923,7 +923,7 @@ HTML
 # Сгенерировано 3x-ui.sh (3X-UI KIT) — перезаписывается при повторном запуске.
 server {
     listen 127.0.0.1:${INNER[web]} ssl http2 proxy_protocol;
-    server_name ${DOMAIN:-_} ${TGWEB_DOMAIN:-};
+    server_name ${DOMAIN:-_};
     ssl_certificate $CERT;
     ssl_certificate_key $KEY;
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -934,21 +934,6 @@ server {
     absolute_redirect off;
     access_log off;
 $locs
-    # TgWebProxy is a separate loopback-only HTTP backend. nginx owns TLS and
-    # preserves the public Host used by TgWebProxy capability validation.
-    location /tgweb/ {
-        proxy_pass http://127.0.0.1:${INNER[tgweb]}/;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$proxy_protocol_addr;
-        proxy_set_header X-Forwarded-For \$proxy_protocol_addr;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 1h;
-        proxy_send_timeout 1h;
-        client_max_body_size 0;
-    }
     location = ${SUB_PATH}qrcode.js {
         alias /etc/3x-ui/sub_templates/kit/qrcode.js;
         default_type application/javascript;
@@ -980,6 +965,38 @@ $locs
 $fallback_location
 }
 NGX
+  if [[ -n $TGWEB_DOMAIN ]]; then
+    cat >>/etc/nginx/conf.d/kit.conf <<NGX
+
+# TgWebProxy shares public TCP/443 but is selected by SNI/Host. Its relay
+# remains plain HTTP on loopback and never competes with MTProto :10445.
+server {
+    listen 127.0.0.1:${INNER[web]} ssl http2 proxy_protocol;
+    server_name $TGWEB_DOMAIN;
+    ssl_certificate $CERT;
+    ssl_certificate_key $KEY;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
+    server_tokens off;
+    access_log off;
+
+    location / {
+        proxy_pass http://127.0.0.1:${INNER[tgweb]};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$proxy_protocol_addr;
+        proxy_set_header X-Forwarded-For \$proxy_protocol_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        client_max_body_size 0;
+    }
+}
+NGX
+  fi
   grep -q 'kit-stream.conf' /etc/nginx/nginx.conf || echo 'include /etc/nginx/kit-stream.conf;' >>/etc/nginx/nginx.conf
   nginx -t >/tmp/nginx-test.log 2>&1 || { cat /tmp/nginx-test.log >&2; die "nginx не принял конфиг — лог выше."; }
   systemctl enable nginx >/dev/null 2>&1
