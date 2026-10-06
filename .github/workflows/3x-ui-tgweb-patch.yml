@@ -1,0 +1,69 @@
+name: 3x-ui TgWeb patch
+
+on:
+  push:
+    branches: [feature/tgwebproxy-integration]
+    paths:
+      - '3X-UI_KIT/3xui-tgweb-patch/**'
+      - '3X-UI_KIT/kit.sh'
+      - '3X-UI_KIT/kit-sub.py'
+      - '3X-UI_KIT/tgweb-reconcile.sh'
+      - '.github/workflows/3x-ui-tgweb-patch.yml'
+  workflow_dispatch:
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout integration repo
+        uses: actions/checkout@v4
+        with:
+          path: integration
+
+      - name: Checkout pinned upstream 3x-ui
+        uses: actions/checkout@v4
+        with:
+          repository: MHSanaei/3x-ui
+          ref: d57dcf824b6211201252da137b79029747f142f3
+          path: 3x-ui
+
+      - name: Apply guarded patch
+        run: bash integration/3X-UI_KIT/3xui-tgweb-patch/apply.sh 3x-ui
+
+      - name: Backend tests
+        working-directory: 3x-ui
+        run: |
+          go test ./internal/web/service/... ./internal/database/...
+
+      - name: Xray isolation regression check
+        working-directory: 3x-ui
+        run: |
+          ! grep -Rni --exclude='*_test.go' -E 'tgweb|Telegram WebProxy|externalInboundKeys' internal/xray
+
+      - name: Frontend install
+        working-directory: 3x-ui/frontend
+        run: npm ci
+
+      - name: Frontend typecheck and tests
+        working-directory: 3x-ui/frontend
+        run: |
+          npm run typecheck --if-present
+          npm test -- --run
+
+      - name: Frontend build
+        working-directory: 3x-ui/frontend
+        run: npm run build
+
+      - name: Build backend
+        working-directory: 3x-ui
+        run: go build ./...
+
+      - name: Save patched source diff
+        working-directory: 3x-ui
+        run: git diff --binary > ../3x-ui-tgweb.patch
+
+      - name: Upload patch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 3x-ui-tgweb-patch
+          path: 3x-ui-tgweb.patch
