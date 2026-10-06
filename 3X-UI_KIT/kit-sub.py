@@ -103,22 +103,22 @@ def _tgweb_attached(email):
     try:
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
         try:
-            has_table = con.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='client_external_inbounds'"
+            tgweb = con.execute(
+                "SELECT id FROM inbounds WHERE protocol='tgweb' ORDER BY id LIMIT 1"
             ).fetchone()
-            if has_table:
+            if tgweb:
                 row = con.execute(
-                    "SELECT 1 FROM client_external_inbounds cei "
-                    "JOIN clients c ON c.id=cei.client_id "
-                    "WHERE c.email=? AND cei.provider='tgweb' LIMIT 1",
-                    (email,),
+                    "SELECT 1 FROM client_inbounds ci "
+                    "JOIN clients c ON c.id=ci.client_id "
+                    "WHERE c.email=? AND ci.inbound_id=? LIMIT 1",
+                    (email, int(tgweb[0])),
                 ).fetchone()
                 return bool(row)
             row = con.execute("SELECT COALESCE(comment,'') FROM clients WHERE email=? LIMIT 1", (email,)).fetchone()
             return bool(row) and "[tgweb:off]" not in str(row[0] or "")
         finally:
             con.close()
-    except (OSError, sqlite3.Error):
+    except (OSError, sqlite3.Error, ValueError, TypeError):
         return False
 
 
