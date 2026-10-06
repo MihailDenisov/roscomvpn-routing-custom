@@ -116,10 +116,10 @@ index 82acec7b..8651c5f9 100644
          ),
 diff --git a/frontend/src/test/tgweb-sub-card.test.tsx b/frontend/src/test/tgweb-sub-card.test.tsx
 new file mode 100755
-index 00000000..5a5ed76d
+index 00000000..65b72ea4
 --- /dev/null
 +++ b/frontend/src/test/tgweb-sub-card.test.tsx
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,62 @@
 +import { fireEvent, render, screen, within } from '@testing-library/react';
 +import { describe, expect, it, vi } from 'vitest';
 +
@@ -135,7 +135,13 @@ index 00000000..5a5ed76d
 +  it('renders the card with link, Telegram button, copy and QR for an attached client', () => {
 +    const onCopy = vi.fn();
 +    const { container } = render(
-+      <SubLinksTab subUrl="https://sub.example/x" subJsonUrl="" subClashUrl="" tgweb={TGWEB} onCopy={onCopy} />,
++      <SubLinksTab
++        subUrl="https://sub.example/x"
++        subJsonUrl=""
++        subClashUrl=""
++        tgweb={TGWEB}
++        onCopy={onCopy}
++      />,
 +    );
 +
 +    const card = screen.getByTestId('tgweb-share-card');
@@ -201,10 +207,10 @@ index a6eaf040..3149e329 100644
  }
  
 diff --git a/internal/database/model/model.go b/internal/database/model/model.go
-index 8421ba6b..df55d4d9 100644
+index 8421ba6b..2d790316 100644
 --- a/internal/database/model/model.go
 +++ b/internal/database/model/model.go
-@@ -1009,6 +1009,22 @@ type ClientInbound struct {
+@@ -1009,6 +1009,30 @@ type ClientInbound struct {
  
  func (ClientInbound) TableName() string { return "client_inbounds" }
  
@@ -212,6 +218,12 @@ index 8421ba6b..df55d4d9 100644
 +// cumulative counters for a canonical client, so 3x-ui traffic resets keep
 +// shared-quota semantics correct. Attachment state still lives exclusively
 +// in client_inbounds; this table is runtime traffic accounting only.
++//
++// ResetSeq is the canonical fact of a 3x-ui traffic reset: every centralized
++// reset path advances it via tgweb.MarkClientsReset. Unlike counter-drop
++// heuristics it also fires for clients whose VPN usage is 0 -> 0. SeenResetSeq
++// is the sequence the TgWeb job has already folded into the baseline; a
++// mismatch starts a new epoch (baseline pins to the current runtime counters).
 +type TgWebTrafficBaseline struct {
 +	Id           int    `json:"id" gorm:"primaryKey;autoIncrement"`
 +	Email        string `json:"email" gorm:"uniqueIndex:idx_tgweb_baseline;not null"`
@@ -219,6 +231,8 @@ index 8421ba6b..df55d4d9 100644
 +	BaselineUp   int64  `json:"baselineUp" gorm:"column:baseline_up"`
 +	BaselineDown int64  `json:"baselineDown" gorm:"column:baseline_down"`
 +	VpnSeen      int64  `json:"vpnSeen" gorm:"column:vpn_seen"`
++	ResetSeq     int64  `json:"resetSeq" gorm:"column:reset_seq;default:0"`
++	SeenResetSeq int64  `json:"seenResetSeq" gorm:"column:seen_reset_seq;default:0"`
 +	UpdatedAt    int64  `json:"updatedAt" gorm:"autoUpdateTime:milli"`
 +}
 +
@@ -263,10 +277,10 @@ index ec5a5181..43a8c322 100644
  // ResolveRequest extracts scheme, host, and header information from an HTTP request.
 diff --git a/internal/sub/tgweb.go b/internal/sub/tgweb.go
 new file mode 100755
-index 00000000..53fda79d
+index 00000000..43b451a8
 --- /dev/null
 +++ b/internal/sub/tgweb.go
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,120 @@
 +package sub
 +
 +import (
@@ -301,9 +315,13 @@ index 00000000..53fda79d
 +// TgWebShareForSub builds the TgWeb share card for a subscription page, or
 +// returns nil when the card must not be shown. Show conditions:
 +// the client is globally enabled, attached to an enabled TgWeb inbound, not
-+// expired, quota not exhausted, and the runtime credential actually exists.
-+// A runtime outage hides the card (VPN links still render) and is logged
-+// server-side without token or secret leakage.
++// expired, quota not exhausted, and the runtime credential exists AND is
++// enabled. The runtime Enabled flag is the reconciler's own decision output
++// (global enable && not expired && shared VPN+Web quota remaining), so
++// gating on it keeps the subscription page consistent with effective runtime
++// access — including usage the panel-side checks above cannot see (AWG
++// shadows, quota-epoch baselines). A runtime outage hides the card (VPN links
++// still render) and is logged server-side without token or secret leakage.
 +func (s *SubService) TgWebShareForSub(subId string) *TgWebShare {
 +	db := database.GetDB()
 +	var inbounds []model.Inbound
@@ -366,7 +384,7 @@ index 00000000..53fda79d
 +			}
 +			secret := ""
 +			for _, rc := range runtimeDomain.Clients {
-+				if rc.Name == c.Email && rc.Secret != "" {
++				if rc.Name == c.Email && rc.Secret != "" && rc.Enabled {
 +					secret = rc.Secret
 +					break
 +				}
@@ -385,10 +403,10 @@ index 00000000..53fda79d
 +}
 diff --git a/internal/sub/tgweb_test.go b/internal/sub/tgweb_test.go
 new file mode 100755
-index 00000000..fb7f5495
+index 00000000..10b280ae
 --- /dev/null
 +++ b/internal/sub/tgweb_test.go
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,233 @@
 +package sub
 +
 +import (
@@ -584,6 +602,42 @@ index 00000000..fb7f5495
 +	}))
 +	if share := (&SubService{}).TgWebShareForSub("sub-1"); share != nil {
 +		t.Fatalf("share must be hidden for disabled inbound: %+v", share)
++	}
++}
++
++// The runtime credential's Enabled flag is the reconciler's decision output.
++// A disabled credential must hide the card even when the panel-side checks
++// pass — including the shared-quota case (VPN 100 + web 900 of Total 1000)
++// that only the reconciler can see, and a disabled credential that still
++// carries a non-empty secret.
++func TestTgWebShareHiddenWhenRuntimeCredentialDisabled(t *testing.T) {
++	cases := []struct {
++		name    string
++		totalGB int64
++		vpnUsed int64
++		up      int64
++	}{
++		{"disabled credential with quota left", 0, 0, 10},
++		{"disabled credential with exhausted shared quota and non-empty secret", 1000, 100, 900},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			setupTgWebShareDB(t)
++			seedShareInbound(t, 42, true)
++			rec := seedShareClient(t, "mv", "sub-1", true, tc.totalGB, 0)
++			seedShareAttachment(t, rec, 42)
++			if tc.vpnUsed > 0 {
++				if err := database.GetDB().Create(&xray.ClientTraffic{Email: rec.Email, Up: tc.vpnUsed}).Error; err != nil {
++					t.Fatalf("seed traffic: %v", err)
++				}
++			}
++			domains := runtimeWith("mv", "00112233445566778899aabbccddeeff", tc.up, 0)
++			domains[0].Clients[0].Enabled = false
++			tgweb.SetManagerForTest(tgweb.NewManager(&tgwebShareAPI{domains: domains}))
++			if share := (&SubService{}).TgWebShareForSub("sub-1"); share != nil {
++				t.Fatalf("share must be hidden when the runtime credential is disabled: %+v", share)
++			}
++		})
 +	}
 +}
 diff --git a/internal/tgweb/manager.go b/internal/tgweb/manager.go
@@ -787,6 +841,61 @@ index 56f5ec81..355fe2cd 100644
 +	mv, _ := byName(api.puts["web.maicraft.tech"], "mv")
 +	if mv.Enabled {
 +		t.Fatalf("disabled client re-enabled: %+v", mv)
++	}
++}
+diff --git a/internal/tgweb/reset.go b/internal/tgweb/reset.go
+new file mode 100644
+index 00000000..a5250d4a
+--- /dev/null
++++ b/internal/tgweb/reset.go
+@@ -0,0 +1,49 @@
++package tgweb
++
++import (
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++	"github.com/mhsanaei/3x-ui/v3/internal/logger"
++
++	"gorm.io/gorm"
++)
++
++// markResetChunk bounds emails per UPDATE so the statement stays under the
++// SQLite host-variable limit and the MySQL packet limit on any real install.
++const markResetChunk = 500
++
++// MarkClientsReset records the canonical fact of a 3x-ui traffic reset for
++// the given canonical client emails: every matching baseline row's ResetSeq
++// advances by one, starting a new shared-quota epoch. An empty emails slice
++// advances every known row (ResetAllTraffics also covers clients without
++// TgWeb attachments; the epoch takes effect only for attached ones).
++//
++// It is deliberately best-effort and never returns an error: tgweb quota
++// bookkeeping must never break a core 3x-ui traffic reset, so failures are
++// logged and swallowed, and the epoch self-heals on the next TgWeb job tick.
++//
++// Call it inside the caller's traffic-write transaction so the reset and the
++// epoch bump commit atomically.
++func MarkClientsReset(tx *gorm.DB, emails []string) {
++	if tx == nil {
++		return
++	}
++	bump := func(batch []string) {
++		q := tx.Model(&model.TgWebTrafficBaseline{}).
++			Update("reset_seq", gorm.Expr("reset_seq + 1"))
++		if len(batch) > 0 {
++			q = tx.Model(&model.TgWebTrafficBaseline{}).
++				Where("email IN ?", batch).
++				Update("reset_seq", gorm.Expr("reset_seq + 1"))
++		}
++		if err := q.Error; err != nil {
++			logger.Warning("tgweb: record quota reset epoch failed:", err)
++		}
++	}
++	if len(emails) == 0 {
++		bump(nil)
++		return
++	}
++	for start := 0; start < len(emails); start += markResetChunk {
++		bump(emails[start:min(start+markResetChunk, len(emails))])
 +	}
 +}
 diff --git a/internal/web/job/tgweb_e2e_test.go b/internal/web/job/tgweb_e2e_test.go
@@ -1020,10 +1129,10 @@ index 00000000..b371439d
 +}
 diff --git a/internal/web/job/tgweb_epoch_test.go b/internal/web/job/tgweb_epoch_test.go
 new file mode 100755
-index 00000000..066fe49d
+index 00000000..f50f1585
 --- /dev/null
 +++ b/internal/web/job/tgweb_epoch_test.go
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,296 @@
 +package job
 +
 +import (
@@ -1172,20 +1281,175 @@ index 00000000..066fe49d
 +		t.Fatal("baseline row created without any TgWeb inbound")
 +	}
 +}
++
++// TgWeb-only client: VPN usage is 0 the whole time, so no counter drop can
++// ever signal a reset. The canonical reset fact (ResetSeq, written by the
++// centralized reset paths via tgweb.MarkClientsReset) must still advance the
++// web baseline to the current runtime counters and start a clean epoch.
++func TestTgWebJobEpochCanonicalResetWithZeroVpnUsage(t *testing.T) {
++	setupTgWebJobDB(t)
++	seedTgWebInbound(t, 42, "tgweb-web",
++		`{"publicHost":"web.maicraft.tech","publicPort":443,"clients":[]}`, true)
++	seedTgWebClient(t, "bob", 42)
++	seedTraffic(t, "bob", 0, 0)
++
++	api := &epochAPI{domains: []tgweb.SnapshotDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []tgweb.SnapshotClient{{
++			PolicyClient: tgweb.PolicyClient{Name: "bob", Secret: "s3cr3t", Enabled: true},
++			BytesUp:      0, BytesDown: 400,
++		}},
++	}}}
++	tgweb.SetManagerForTest(tgweb.NewManager(api))
++
++	// Tick 1: initial epoch — historical web traffic counts, baseline stays 0.
++	NewTgWebJob().Run()
++	row, ok := baselineRow(t, "bob", "web.maicraft.tech")
++	if !ok || row.BaselineUp != 0 || row.BaselineDown != 0 || row.VpnSeen != 0 {
++		t.Fatalf("initial epoch row = %+v ok=%v, want zero baseline, vpnSeen 0", row, ok)
++	}
++
++	// Штатный reset через централизованный путь (VPN 0 -> 0, наблюдать нечего).
++	tgweb.MarkClientsReset(database.GetDB(), []string{"bob"})
++
++	// Runtime counters keep accumulating while the panel resets VPN traffic.
++	api.domains[0].Clients[0].BytesDown = 460
++	NewTgWebJob().Run()
++	row, _ = baselineRow(t, "bob", "web.maicraft.tech")
++	if row.BaselineUp != 0 || row.BaselineDown != 460 {
++		t.Fatalf("post-reset row = %+v, want baseline pinned to current runtime counters 0/460", row)
++	}
++	if row.ResetSeq != 1 || row.SeenResetSeq != 1 {
++		t.Fatalf("epoch seqs = %d/%d, want 1/1", row.ResetSeq, row.SeenResetSeq)
++	}
++	// Effective web usage is now max(0, 460-460) = 0: the new period is clean.
++
++	// A tick without a reset must keep the epoch stable.
++	api.domains[0].Clients[0].BytesDown = 500
++	NewTgWebJob().Run()
++	row, _ = baselineRow(t, "bob", "web.maicraft.tech")
++	if row.BaselineDown != 460 || row.ResetSeq != 1 || row.SeenResetSeq != 1 {
++		t.Fatalf("stable epoch row = %+v, want baseline 460, seqs 1/1", row)
++	}
++}
++
++// Multiple canonical reset cycles: each reset bumps ResetSeq once and each
++// job tick folds the pending sequence into the baseline exactly once.
++func TestTgWebJobEpochCanonicalResetMultipleCycles(t *testing.T) {
++	setupTgWebJobDB(t)
++	seedTgWebInbound(t, 42, "tgweb-web",
++		`{"publicHost":"web.maicraft.tech","publicPort":443,"clients":[]}`, true)
++	seedTgWebClient(t, "mv", 42)
++	seedTraffic(t, "mv", 100, 0)
++
++	api := &epochAPI{domains: []tgweb.SnapshotDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []tgweb.SnapshotClient{{
++			PolicyClient: tgweb.PolicyClient{Name: "mv", Secret: "s3cr3t", Enabled: true},
++			BytesUp:      50, BytesDown: 0,
++		}},
++	}}}
++	tgweb.SetManagerForTest(tgweb.NewManager(api))
++
++	NewTgWebJob().Run()
++	resetClientTrafficForTest(t, "mv")
++	tgweb.MarkClientsReset(database.GetDB(), []string{"mv"})
++	api.domains[0].Clients[0].BytesUp = 400
++	NewTgWebJob().Run()
++	row, _ := baselineRow(t, "mv", "web.maicraft.tech")
++	if row.BaselineUp != 400 || row.ResetSeq != 1 || row.SeenResetSeq != 1 {
++		t.Fatalf("cycle 1 row = %+v, want baseline 400, seqs 1/1", row)
++	}
++
++	// Cycle 2: usage accrues (vpn 30, web +50), then the second reset.
++	res := database.GetDB().Exec("UPDATE client_traffics SET up = 30 WHERE email = ?", "mv")
++	if res.Error != nil || res.RowsAffected == 0 {
++		t.Fatalf("grow vpn traffic: %v rows=%d", res.Error, res.RowsAffected)
++	}
++	api.domains[0].Clients[0].BytesUp = 450
++	NewTgWebJob().Run()
++	row, _ = baselineRow(t, "mv", "web.maicraft.tech")
++	if row.BaselineUp != 400 || row.VpnSeen != 30 {
++		t.Fatalf("pre-reset-2 row = %+v, want baseline 400, vpnSeen 30", row)
++	}
++	resetClientTrafficForTest(t, "mv")
++	tgweb.MarkClientsReset(database.GetDB(), []string{"mv"})
++	api.domains[0].Clients[0].BytesUp = 700
++	api.domains[0].Clients[0].BytesDown = 100
++	NewTgWebJob().Run()
++	row, _ = baselineRow(t, "mv", "web.maicraft.tech")
++	if row.BaselineUp != 700 || row.BaselineDown != 100 || row.VpnSeen != 0 ||
++		row.ResetSeq != 2 || row.SeenResetSeq != 2 {
++		t.Fatalf("cycle 2 row = %+v, want baseline 700/100, vpnSeen 0, seqs 2/2", row)
++	}
++}
++
++// A reset landing while the runtime entry is temporarily missing must not
++// pin the baseline to a wrong value: the pending sequence stays pending and
++// folds into the baseline on the first tick that sees the client again.
++func TestTgWebJobEpochCanonicalResetDefersPinUntilRuntimeSeen(t *testing.T) {
++	setupTgWebJobDB(t)
++	seedTgWebInbound(t, 42, "tgweb-web",
++		`{"publicHost":"web.maicraft.tech","publicPort":443,"clients":[]}`, true)
++	seedTgWebClient(t, "mv", 42)
++	seedTraffic(t, "mv", 100, 0)
++
++	api := &epochAPI{domains: []tgweb.SnapshotDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []tgweb.SnapshotClient{{
++			PolicyClient: tgweb.PolicyClient{Name: "mv", Secret: "s3cr3t", Enabled: true},
++			BytesUp:      100, BytesDown: 0,
++		}},
++	}}}
++	tgweb.SetManagerForTest(tgweb.NewManager(api))
++
++	NewTgWebJob().Run()
++	if row, _ := baselineRow(t, "mv", "web.maicraft.tech"); row.VpnSeen != 100 {
++		t.Fatalf("initial row = %+v, want vpnSeen 100", row)
++	}
++
++	// Runtime temporarily drops the client; the reset happens meanwhile.
++	api.domains[0].Clients = nil
++	resetClientTrafficForTest(t, "mv")
++	tgweb.MarkClientsReset(database.GetDB(), []string{"mv"})
++	NewTgWebJob().Run()
++	row, _ := baselineRow(t, "mv", "web.maicraft.tech")
++	if row.ResetSeq != 1 || row.SeenResetSeq != 0 || row.BaselineUp != 0 {
++		t.Fatalf("deferred row = %+v, want pending seq 1/0, baseline untouched", row)
++	}
++
++	// The client reappears with counters grown during the outage.
++	api.domains[0].Clients = []tgweb.SnapshotClient{{
++		PolicyClient: tgweb.PolicyClient{Name: "mv", Secret: "s3cr3t", Enabled: true},
++		BytesUp:      130, BytesDown: 0,
++	}}
++	NewTgWebJob().Run()
++	row, _ = baselineRow(t, "mv", "web.maicraft.tech")
++	if row.BaselineUp != 130 || row.SeenResetSeq != 1 {
++		t.Fatalf("post-reappear row = %+v, want baseline 130, seen 1", row)
++	}
++}
 diff --git a/internal/web/job/tgweb_job.go b/internal/web/job/tgweb_job.go
-index d4cbf389..ccb685ee 100644
+index d4cbf389..a0c2a5ec 100644
 --- a/internal/web/job/tgweb_job.go
 +++ b/internal/web/job/tgweb_job.go
-@@ -112,12 +112,89 @@ func (j *TgWebJob) desired() ([]tgweb.DesiredDomain, error) {
+@@ -112,12 +112,106 @@ func (j *TgWebJob) desired() ([]tgweb.DesiredDomain, error) {
  	return out, nil
  }
  
-+// syncEpochs pins each client's quota-epoch baseline. A 3x-ui traffic reset
-+// zeroes VPN counters; the aggregate (including AWG shadows) dropping below
-+// the last observed value is the reset signal that moves the web baseline to
-+// the current runtime counters. Runtime counters themselves are never reset
-+// from here. A missing runtime entry keeps the previous baseline — a
-+// temporarily absent client must not corrupt the epoch.
++// syncEpochs pins each client's quota-epoch baseline. The canonical reset
++// fact is ResetSeq, advanced by every centralized 3x-ui traffic-reset path
++// via tgweb.MarkClientsReset — including for a client whose VPN usage is
++// 0 -> 0, where no counter drop could ever be observed. When the sequence
++// moves, the web baseline pins to the current runtime counters and the new
++// epoch starts at zero effective web usage. If the runtime entry is missing
++// at that moment, the pin defers to the next tick that sees the client.
++// Runtime counters themselves are never reset from here. A missing runtime
++// entry otherwise keeps the previous baseline — a temporarily absent client
++// must not corrupt the epoch. As a self-healing fallback for any reset path
++// not instrumented with MarkClientsReset, the VPN aggregate (including AWG
++// shadows) dropping below the last observed value also advances the epoch:
++// VPN counters are cumulative within an epoch, so a drop means a reset.
 +func (j *TgWebJob) syncEpochs(desired []tgweb.DesiredDomain) error {
 +	if len(desired) == 0 {
 +		return nil
@@ -1219,12 +1483,22 @@ index d4cbf389..ccb685ee 100644
 +			var row model.TgWebTrafficBaseline
 +			res := db.Where("email = ? AND domain = ?", dc.Name, domain).First(&row)
 +			if res.Error == nil {
++				if row.ResetSeq != row.SeenResetSeq {
++					if cur, ok := runtimeClients[dc.Name]; ok {
++						logger.Info("tgweb: quota reset recorded for", dc.Name,
++							"; advancing web quota baseline to current runtime counters")
++						row.BaselineUp = cur.BytesUp
++						row.BaselineDown = cur.BytesDown
++						row.SeenResetSeq = row.ResetSeq
++					}
++				}
 +				if dc.VPNUsedBytes < row.VpnSeen {
 +					if cur, ok := runtimeClients[dc.Name]; ok {
 +						logger.Warning("tgweb: VPN traffic reset detected for", dc.Name,
 +							"; advancing web quota baseline to current runtime counters")
 +						row.BaselineUp = cur.BytesUp
 +						row.BaselineDown = cur.BytesDown
++						row.SeenResetSeq = row.ResetSeq
 +					}
 +				}
 +				row.VpnSeen = dc.VPNUsedBytes
@@ -1266,3 +1540,144 @@ index d4cbf389..ccb685ee 100644
  	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
  	defer cancel()
  	if err := tgweb.GetManager().Reconcile(ctx, desired); err != nil {
+diff --git a/internal/web/service/client_traffic.go b/internal/web/service/client_traffic.go
+index 93016eea..365c4156 100644
+--- a/internal/web/service/client_traffic.go
++++ b/internal/web/service/client_traffic.go
+@@ -6,6 +6,7 @@ import (
+ 	"github.com/mhsanaei/3x-ui/v3/internal/database"
+ 	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
+ 	"github.com/mhsanaei/3x-ui/v3/internal/logger"
++	"github.com/mhsanaei/3x-ui/v3/internal/tgweb"
+ 	"github.com/mhsanaei/3x-ui/v3/internal/util/common"
+ 	"github.com/mhsanaei/3x-ui/v3/internal/xray"
+ 
+@@ -90,6 +91,7 @@ func (s *ClientService) BulkResetTraffic(inboundSvc *InboundService, emails []st
+ 				}
+ 				affected += int(res.RowsAffected)
+ 			}
++			tgweb.MarkClientsReset(tx, cleanEmails)
+ 			if err := clearGlobalTraffic(tx, cleanEmails...); err != nil {
+ 				return err
+ 			}
+@@ -180,6 +182,8 @@ func (s *ClientService) resetAllClientTrafficsLocked(id int) ([]string, []int, e
+ 			return result.Error
+ 		}
+ 
++		tgweb.MarkClientsReset(tx, resetEmails)
++
+ 		if err := clearGlobalTraffic(tx, resetEmails...); err != nil {
+ 			return err
+ 		}
+@@ -224,6 +228,7 @@ func (s *ClientService) ResetAllTraffics() (bool, error) {
+ 				return res.Error
+ 			}
+ 			affected = res.RowsAffected
++			tgweb.MarkClientsReset(tx, nil)
+ 			if err := tx.Where("1 = 1").Delete(&model.ClientGlobalTraffic{}).Error; err != nil {
+ 				return err
+ 			}
+diff --git a/internal/web/service/inbound_traffic.go b/internal/web/service/inbound_traffic.go
+index 7f4acb7d..02276502 100644
+--- a/internal/web/service/inbound_traffic.go
++++ b/internal/web/service/inbound_traffic.go
+@@ -14,6 +14,7 @@ import (
+ 	"github.com/mhsanaei/3x-ui/v3/internal/database"
+ 	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
+ 	"github.com/mhsanaei/3x-ui/v3/internal/logger"
++	"github.com/mhsanaei/3x-ui/v3/internal/tgweb"
+ 	"github.com/mhsanaei/3x-ui/v3/internal/web/runtime"
+ 	"github.com/mhsanaei/3x-ui/v3/internal/xray"
+ 
+@@ -684,6 +685,7 @@ func (s *InboundService) ResetClientTrafficByEmail(clientEmail string) error {
+ 				Updates(map[string]any{"enable": true, "up": 0, "down": 0}).Error; err != nil {
+ 				return err
+ 			}
++			tgweb.MarkClientsReset(tx, []string{clientEmail})
+ 			return tx.Where("email = ?", clientEmail).Delete(&model.NodeClientTraffic{}).Error
+ 		})
+ 	})
+@@ -780,6 +782,7 @@ func (s *InboundService) resetClientTrafficLocked(id int, clientEmail string) (b
+ 		if err := clearGlobalTraffic(tx, clientEmail); err != nil {
+ 			return err
+ 		}
++		tgweb.MarkClientsReset(tx, []string{clientEmail})
+ 		if err := tx.Where("email = ?", clientEmail).Delete(&model.NodeClientTraffic{}).Error; err != nil {
+ 			return err
+ 		}
+diff --git a/internal/web/service/tgweb_reset_test.go b/internal/web/service/tgweb_reset_test.go
+new file mode 100644
+index 00000000..8b92be04
+--- /dev/null
++++ b/internal/web/service/tgweb_reset_test.go
+@@ -0,0 +1,70 @@
++package service
++
++import (
++	"testing"
++
++	"github.com/mhsanaei/3x-ui/v3/internal/database"
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++	"github.com/mhsanaei/3x-ui/v3/internal/xray"
++)
++
++// The centralized reset paths must record the canonical TgWeb quota reset
++// even when the client's VPN usage is 0 -> 0: a counter drop can never
++// signal that, so the fact has to be written by the reset path itself.
++func TestResetClientTrafficByEmailAdvancesTgWebEpoch(t *testing.T) {
++	setupConflictDB(t)
++	if err := database.GetDB().Create(&xray.ClientTraffic{Email: "bob", Up: 100, Down: 50, Enable: true}).Error; err != nil {
++		t.Fatalf("seed traffic: %v", err)
++	}
++	if err := database.GetDB().Create(&model.TgWebTrafficBaseline{
++		Email: "bob", Domain: "web.maicraft.tech",
++	}).Error; err != nil {
++		t.Fatalf("seed baseline: %v", err)
++	}
++
++	if err := (&InboundService{}).ResetClientTrafficByEmail("bob"); err != nil {
++		t.Fatalf("ResetClientTrafficByEmail: %v", err)
++	}
++
++	var tr xray.ClientTraffic
++	if err := database.GetDB().Where("email = ?", "bob").First(&tr).Error; err != nil {
++		t.Fatalf("traffic row: %v", err)
++	}
++	if tr.Up != 0 || tr.Down != 0 {
++		t.Fatalf("VPN counters = %d/%d, want 0/0", tr.Up, tr.Down)
++	}
++	var row model.TgWebTrafficBaseline
++	if err := database.GetDB().Where("email = ?", "bob").First(&row).Error; err != nil {
++		t.Fatalf("baseline row: %v", err)
++	}
++	if row.ResetSeq != 1 || row.SeenResetSeq != 0 {
++		t.Fatalf("epoch seqs = %d/%d, want reset_seq 1 (bumped), seen 0 (job folds it later)", row.ResetSeq, row.SeenResetSeq)
++	}
++}
++
++// BulkResetTraffic zeroes counters for many emails in one transaction; the
++// epoch bump must cover exactly those emails.
++func TestBulkResetTrafficAdvancesTgWebEpoch(t *testing.T) {
++	setupConflictDB(t)
++	for _, email := range []string{"bob", "alice"} {
++		if err := database.GetDB().Create(&xray.ClientTraffic{Email: email, Up: 10, Down: 10, Enable: true}).Error; err != nil {
++			t.Fatalf("seed traffic: %v", err)
++		}
++		if err := database.GetDB().Create(&model.TgWebTrafficBaseline{Email: email, Domain: "web.maicraft.tech"}).Error; err != nil {
++			t.Fatalf("seed baseline: %v", err)
++		}
++	}
++
++	if _, err := (&ClientService{}).BulkResetTraffic(&InboundService{}, []string{"bob", "alice"}); err != nil {
++		t.Fatalf("BulkResetTraffic: %v", err)
++	}
++	for _, email := range []string{"bob", "alice"} {
++		var row model.TgWebTrafficBaseline
++		if err := database.GetDB().Where("email = ?", email).First(&row).Error; err != nil {
++			t.Fatalf("baseline row %s: %v", email, err)
++		}
++		if row.ResetSeq != 1 {
++			t.Fatalf("%s reset_seq = %d, want 1", email, row.ResetSeq)
++		}
++	}
++}
