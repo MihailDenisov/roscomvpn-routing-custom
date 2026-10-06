@@ -101,6 +101,19 @@ tgweb_link() {
   [[ -n $sec ]] && printf 'tg://webproxy?server=%s&secret=%s\n' "$TGWEB_DOMAIN" "$sec"
 }
 
+tgweb_used() {
+  [[ $TGWEB_ENABLED == yes ]] || { echo 0; return; }
+  tgweb_clients | jq -r --arg n "$1" 'map(select(.name == $n))[0] | ((.bytes_up // 0) + (.bytes_down // 0)) // 0'
+}
+
+shared_used() {
+  local name=$1 all vpn web
+  all=$(clients)
+  vpn=$(jq -r --arg n "$name" '[.[] | select(.email == $n or (.email | test("^" + $n + "-awg[0-9]*$"))) | ((.traffic.up // 0) + (.traffic.down // 0))] | add // 0' <<<"$all")
+  web=$(tgweb_used "$name")
+  echo $((vpn + web))
+}
+
 API=""
 for scheme in https http; do
   API="$scheme://127.0.0.1:$XUI_PANEL_PORT/$XUI_WEB_BASE_PATH/panel/api"
@@ -235,7 +248,9 @@ cmd_list() {
   {
     printf "${B}%-18s %-22s %-14s %-10s %s${N}\n" "Пользователь" "Трафик" "До" "Статус" "Был в сети"
     while IFS=$'\t' read -r email used total exp en last; do
-      local tr till st seen
+      local tr till st seen web_used
+      web_used=$(tgweb_used "$email")
+      used=$((used + web_used))
       tr="$(human "$used")"; ((total > 0)) && tr="$tr / $(human "$total")"
       if ((exp > 0)); then till=$(date -d "@$((exp / 1000))" +%d.%m.%Y); else till="бессрочно"; fi
       if [[ $en != true ]]; then st="${R}выключен${N}"
@@ -291,7 +306,15 @@ cmd_limit() {
 
 cmd_toggle() { # имя true|false
   valid_name "$1"
-  [[ -n $(client "$1") ]] || die "Нет пользователя $1"
+  local current total used
+  current=$(client "$1"); [[ -n $current ]] || die "Нет пользователя $1"
+  if [[ $2 == true ]]; then
+    total=$(jq -r '.totalGB // 0' <<<"$current")
+    used=$(shared_used "$1")
+    if ((total > 0 && used >= total)); then
+      die "Общий лимит трафика исчерпан. Сначала увеличьте лимит пользователя."
+    fi
+  fi
   update_user "$1" ".enable = \$v" --argjson v "$2"
   tgweb_sync_user "$1"
   if [[ $2 == true ]]; then say "Пользователь $1 включён."; else say "Пользователь $1 выключен — подписка и подключения не работают."; fi
