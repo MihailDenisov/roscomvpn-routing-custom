@@ -20,7 +20,7 @@ diff --git a/internal/tgweb/client.go b/internal/tgweb/client.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/tgweb/client.go
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,157 @@
 +package tgweb
 +
 +import (
@@ -178,12 +178,11 @@ new file mode 100644
 +	_, err := c.do(ctx, http.MethodPut, payload)
 +	return err
 +}
-+
 diff --git a/internal/tgweb/manager.go b/internal/tgweb/manager.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/tgweb/manager.go
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,225 @@
 +package tgweb
 +
 +import (
@@ -409,12 +408,11 @@ new file mode 100644
 +	}
 +	return errors.Join(errs...)
 +}
-+
 diff --git a/internal/web/job/tgweb_job.go b/internal/web/job/tgweb_job.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/web/job/tgweb_job.go
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,128 @@
 +package job
 +
 +import (
@@ -543,7 +541,6 @@ new file mode 100644
 +		logger.Debug("tgweb: reconcile deferred:", err)
 +	}
 +}
-+
 diff --git a/internal/web/web.go b/internal/web/web.go
 --- a/internal/web/web.go
 +++ b/internal/web/web.go
@@ -687,7 +684,7 @@ diff --git a/internal/web/service/inbound_tgweb_client_test.go b/internal/web/se
 new file mode 100644
 --- /dev/null
 +++ b/internal/web/service/inbound_tgweb_client_test.go
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,54 @@
 +package service
 +
 +import (
@@ -742,7 +739,6 @@ new file mode 100644
 +		t.Fatalf("client_inbounds count = %d, want 1", n)
 +	}
 +}
-+
 diff --git a/internal/tgweb/manager_test.go b/internal/tgweb/manager_test.go
 new file mode 100644
 --- /dev/null
