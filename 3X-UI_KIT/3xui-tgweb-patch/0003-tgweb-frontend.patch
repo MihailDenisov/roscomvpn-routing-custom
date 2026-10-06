@@ -97,7 +97,7 @@ diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/i
  import type { TunInboundSettings } from '@/schemas/protocols/inbound/tun';
  import type { TunnelInboundSettings } from '@/schemas/protocols/inbound/tunnel';
  import type { VlessClient, VlessInboundSettings } from '@/schemas/protocols/inbound/vless';
-@@ -351,10 +352,18 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
+@@ -351,28 +352,37 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
        max_idle_time: 15,
        authentication_timeout: 3,
        max_udp_relay_packet_size: 1500,
@@ -115,8 +115,6 @@ diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/i
 +  };
 +}
 +
- // Protocol-aware dispatch over every inbound-settings factory. Mirrors
-@@ -360,19 +369,20 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
  // Protocol-aware dispatch over every inbound-settings factory. Mirrors
  // the legacy `Inbound.Settings.getSettings(protocol)` dispatcher, but
  // returns a plain Zod-parsable object instead of a class instance.
