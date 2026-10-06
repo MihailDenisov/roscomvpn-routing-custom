@@ -662,12 +662,12 @@ diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service
  		case "tuic":
 @@ -584,5 +588,7 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model.Inbound) (bool, error) {
  	if oldInbound.NodeID == nil {
- 		if !push {
- 			needRestart = true
--		} else if oldInbound.Protocol == model.MTProto {
-+		} else if oldInbound.Protocol == model.TgWeb {
+-		if !push {
++		if oldInbound.Protocol == model.TgWeb {
 +			// Periodic TgWeb reconciliation applies the committed desired state.
-+		} else if oldInbound.Protocol == model.MTProto {
++		} else if !push {
+ 			needRestart = true
+ 		} else if oldInbound.Protocol == model.MTProto {
  			inboundSvc.applyLocalMtproto(oldInbound.Id)
 @@ -698,6 +704,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
  		newClientId = clients[0].Email
@@ -681,12 +681,12 @@ diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service
 @@ -1018,6 +1026,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
  	if len(oldEmail) > 0 {
  		if oldInbound.NodeID == nil {
- 			if !push {
- 				needRestart = true
--			} else if oldInbound.Protocol == model.MTProto {
-+			} else if oldInbound.Protocol == model.TgWeb {
+-			if !push {
++			if oldInbound.Protocol == model.TgWeb {
 +				// Desired state is reconciled asynchronously.
-+			} else if oldInbound.Protocol == model.MTProto {
++			} else if !push {
+ 				needRestart = true
+ 			} else if oldInbound.Protocol == model.MTProto {
  				inboundSvc.applyLocalMtproto(oldInbound.Id)
 @@ -1207,6 +1217,8 @@ func (s *ClientService) DeleteInboundClient(inboundSvc *InboundService, id int, email string) (bool, error) {
  	if len(email) > 0 {
