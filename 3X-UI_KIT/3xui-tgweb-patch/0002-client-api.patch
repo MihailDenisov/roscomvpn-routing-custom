@@ -69,9 +69,21 @@ diff --git a/internal/web/controller/client.go b/internal/web/controller/client.
 --- a/internal/web/controller/client.go
 +++ b/internal/web/controller/client.go
 @@
+ 	inboundIds, err := a.clientService.GetInboundIdsForRecord(rec.Id)
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	externalInboundKeys, err := a.clientService.GetExternalInboundKeysForRecord(rec.Id)
++	if err != nil {
++		return nil, err
++	}
  	externalLinks, err := a.clientService.GetExternalLinksForRecord(rec.Id)
 @@
+-		"client":           rec,
+-		"inboundIds":       inboundIds,
 -		"externalLinks":    externalLinks,
++		"client":              rec,
++		"inboundIds":          inboundIds,
 +		"externalInboundKeys": externalInboundKeys,
 +		"externalLinks":       externalLinks,
 @@
