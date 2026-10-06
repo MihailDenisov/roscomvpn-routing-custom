@@ -91,7 +91,7 @@ diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/i
 @@ -14,1 +14,2 @@ import type { TrojanClient, TrojanInboundSettings } from '@/schemas/protocols/inbound/trojan';
  import type { TuicClient, TuicInboundSettings } from '@/schemas/protocols/inbound/tuic';
 +import type { TgwebInboundSettings } from '@/schemas/protocols/inbound/tgweb';
-@@ -65,3 +66,11 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
+@@ -357,3 +358,11 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
    };
  }
  
@@ -170,7 +170,8 @@ diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/sr
    ShadowsocksFields,
 +  TgwebFields,
    TuicFields,
-@@ -283,4 +284,5 @@ export default function InboundFormModal({
+@@ -282,5 +283,6 @@ export default function InboundFormModal({
+   const hasSelectableTransport =
      protocol !== Protocols.HYSTERIA &&
      protocol !== Protocols.WIREGUARD &&
      protocol !== Protocols.TUNNEL &&
