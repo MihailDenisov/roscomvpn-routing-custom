@@ -176,7 +176,7 @@ diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/sr
    ShadowsocksFields,
 +  TgwebFields,
    TuicFields,
-@@ -279,12 +280,13 @@ export default function InboundFormModal({
+@@ -279,11 +280,12 @@ export default function InboundFormModal({
     * picker and the per-network sub-forms are hidden.
     */
    const hasSelectableTransport =
