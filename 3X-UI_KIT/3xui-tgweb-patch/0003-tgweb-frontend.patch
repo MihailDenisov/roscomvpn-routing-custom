@@ -117,17 +117,6 @@ diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/i
      default:
        return null;
 
-diff --git a/frontend/src/lib/xray/protocol-capabilities.ts b/frontend/src/lib/xray/protocol-capabilities.ts
---- a/frontend/src/lib/xray/protocol-capabilities.ts
-+++ b/frontend/src/lib/xray/protocol-capabilities.ts
-@@ -80,5 +80,6 @@ export function canEnableSniffing(values: { protocol: string }): boolean {
-     values.protocol !== 'mtproto' &&
-     values.protocol !== 'amneziawg' &&
--    values.protocol !== 'tuic'
-+    values.protocol !== 'tuic' &&
-+    values.protocol !== 'tgweb'
-   );
- }
 
 diff --git a/frontend/src/pages/inbounds/form/protocols/tgweb.tsx b/frontend/src/pages/inbounds/form/protocols/tgweb.tsx
 new file mode 100644
