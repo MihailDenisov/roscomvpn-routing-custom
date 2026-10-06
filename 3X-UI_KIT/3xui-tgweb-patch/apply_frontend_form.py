@@ -88,6 +88,6 @@ rw(P,
         const r = await detach(emailKey, meta.detach, meta.detachExternal);
         if (!r?.success) return r;
       }''')
-rw(P,"            attachedIds={editingAttachedIds}\n            tunnelAllowedIPs={editingTunnelAllowedIPs}",
-     "            attachedIds={editingAttachedIds}\n            attachedExternalInboundKeys={editingExternalInboundKeys}\n            tunnelAllowedIPs={editingTunnelAllowedIPs}")
+rw(P,"            attachedIds={editingAttachedIds}",
+     "            attachedIds={editingAttachedIds}\n            attachedExternalInboundKeys={editingExternalInboundKeys}")
 print("frontend form patch applied")
