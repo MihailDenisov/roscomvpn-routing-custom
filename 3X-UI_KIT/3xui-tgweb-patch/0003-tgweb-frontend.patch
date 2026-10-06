@@ -116,7 +116,23 @@ diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/i
 +}
 +
  // Protocol-aware dispatch over every inbound-settings factory. Mirrors
-@@ -376,3 +385,4 @@ export type AnyInboundSettings =
+@@ -360,19 +369,20 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
+ // Protocol-aware dispatch over every inbound-settings factory. Mirrors
+ // the legacy `Inbound.Settings.getSettings(protocol)` dispatcher, but
+ // returns a plain Zod-parsable object instead of a class instance.
+ // Callers swapping off the class hierarchy use this in place of
+ // `getSettings(p)` + `.toJson()`.
+ export type AnyInboundSettings =
+   | VlessInboundSettings
+   | VmessInboundSettings
+   | TrojanInboundSettings
+   | ShadowsocksInboundSettings
+   | HysteriaInboundSettings
+   | HttpInboundSettings
+   | MixedInboundSettings
+   | TunInboundSettings
+   | TunnelInboundSettings
+   | WireguardInboundSettings
    | MtprotoInboundSettings
    | AmneziawgInboundSettings
 -  | TuicInboundSettings;
@@ -241,7 +257,12 @@ diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/sr
          <>
            <FormField
              name="shareAddrStrategy"
-@@ -730,7 +740,9 @@ export default function InboundFormModal({
+@@ -725,15 +735,17 @@ export default function InboundFormModal({
+         >
+           <Switch />
+         </FormField>
+       )}
+ 
 -      <FormField
 -        name="port"
 -        label={t('pages.inbounds.port')}
@@ -258,6 +279,9 @@ diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/sr
 +          <InputNumber min={isUdsListen ? 0 : 1} max={65535} />
 +        </FormField>
 +      )}
+ 
+       <Form.Item
+         label={
 @@ -816,3 +828,5 @@ export default function InboundFormModal({
        {protocol === Protocols.TUIC && <TuicFields />}
  
