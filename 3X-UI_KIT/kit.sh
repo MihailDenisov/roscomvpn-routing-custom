@@ -55,8 +55,10 @@ tgweb_clients() {
 tgweb_sync_user() {
   [[ $TGWEB_ENABLED == yes ]] || return 0
   local name=$1 rec used total exp enabled all web_used quota existing fresh
-  rec=$(client "$name"); [[ -n $rec ]] || return 0
-  used=$(jq -r '(.traffic.up // 0) + (.traffic.down // 0)' <<<"$rec")
+  local xc
+  xc=$(clients)
+  rec=$(jq -c --arg n "$name" 'map(select(.email == $n))[0] // empty' <<<"$xc"); [[ -n $rec ]] || return 0
+  used=$(jq -r --arg n "$name" '[.[] | select(.email == $n or (.email | test("^" + $n + "-awg[0-9]*$"))) | ((.traffic.up // 0) + (.traffic.down // 0))] | add // 0' <<<"$xc")
   total=$(jq -r '.totalGB // 0' <<<"$rec")
   exp=$(jq -r '.expiryTime // 0' <<<"$rec")
   enabled=$(jq -r '.enable // false' <<<"$rec")
@@ -234,7 +236,7 @@ cmd_link() {
       out+=$'\n'
     done
     if [[ ${SINGLE:-no} == yes ]]; then
-      out=$(sed -E '/^tg:\/\/proxy\?/ s/([?&]port=)[0-9]+/\\1443/' <<<"$out")
+      out=$(sed -E '/^tg:\/\/proxy\?/ s/([?&])port=[0-9]+/\\1port=443/' <<<"$out")
     fi
     out+="$(tgweb_link "$name")"
     out+=$'\n'
