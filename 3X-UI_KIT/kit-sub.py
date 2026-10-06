@@ -95,6 +95,33 @@ def _client_email(sub_id):
         return ""
 
 
+def _tgweb_attached(email):
+    """Return desired TgWeb attachment. Legacy comment marker is transition-only."""
+    if not email:
+        return False
+    db_path = str(CONF.get("xui_db", "/etc/x-ui/x-ui.db"))
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+        try:
+            has_table = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='client_external_inbounds'"
+            ).fetchone()
+            if has_table:
+                row = con.execute(
+                    "SELECT 1 FROM client_external_inbounds cei "
+                    "JOIN clients c ON c.id=cei.client_id "
+                    "WHERE c.email=? AND cei.provider='tgweb' LIMIT 1",
+                    (email,),
+                ).fetchone()
+                return bool(row)
+            row = con.execute("SELECT COALESCE(comment,'') FROM clients WHERE email=? LIMIT 1", (email,)).fetchone()
+            return bool(row) and "[tgweb:off]" not in str(row[0] or "")
+        finally:
+            con.close()
+    except (OSError, sqlite3.Error):
+        return False
+
+
 def tgweb_link_for_sub(sub_id):
     env = _read_tgweb_env()
     domain = env.get("TGWEB_DOMAIN", "")
@@ -102,6 +129,8 @@ def tgweb_link_for_sub(sub_id):
     token_file = env.get("TGWEB_TOKEN_FILE", "")
     email = _client_email(sub_id)
     if not (domain and admin and token_file and email):
+        return ""
+    if not _tgweb_attached(email):
         return ""
     try:
         with open(token_file, encoding="utf-8") as f:
