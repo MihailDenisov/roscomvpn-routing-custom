@@ -36,7 +36,8 @@ declare -A PORTS=([xhttp]=8443 [ws]=2053 [trojan]=2083 [vmess]=2087 [ss]=8388 [t
 PROTOS=(); CREATED=(); OPEN=()
 # Режим «всё TCP на 443»: nginx разводит по SNI и путям, подключения слушают только localhost.
 SINGLE=no
-declare -A INNER=([reality]=10443 [xhttp]=10444 [mtproto]=10445 [web]=10446 [ws]=10451 [vmess]=10452 [trojan]=10453 [sub]=10460)
+declare -A INNER=([reality]=10443 [xhttp]=10444 [mtproto]=10445 [web]=10446 [tgweb]=4600 [ws]=10451 [vmess]=10452 [trojan]=10453 [sub]=10460)
+TGWEB_DOMAIN=${TGWEB_DOMAIN:-}
 SNI2=""; SNI3=""; PANEL_UPSTREAM_SCHEME="http"
 
 if [[ -t 1 ]]; then
@@ -145,7 +146,7 @@ main() {
     die "3X-UI уже установлена другим способом — не трогаю её. Удалите её (x-ui uninstall) или добавьте REALITY в панели вручную."
   fi
 
-  local PORT=443 SNI="" PANEL_SSL=auto HOST="" DOMAIN="" FALLBACK_URL="" UFW=yes NAME="admin" yes=no protos=all ucert="" ukey="" multi=no
+  local PORT=443 SNI="" PANEL_SSL=auto HOST="" DOMAIN="" FALLBACK_URL="" UFW=yes NAME="admin" yes=no protos=all ucert="" ukey="" multi=no tgweb_domain="${TGWEB_DOMAIN:-}"
   while [[ $# -gt 0 ]]; do
     case $1 in
       --port) PORT=$2; shift 2 ;;
@@ -154,6 +155,7 @@ main() {
       --host) HOST=$2; shift 2 ;;
       --domain) DOMAIN=$2; shift 2 ;;
       --fallback-url) FALLBACK_URL=$2; shift 2 ;;
+      --tgweb-domain) tgweb_domain=$2; shift 2 ;;
       --user) NAME=$2; shift 2 ;;
       --protocols) protos=$2; shift 2 ;;
       --cert) ucert=$2; shift 2 ;;
@@ -168,6 +170,10 @@ main() {
   [[ $PORT =~ ^[0-9]+$ ]] && ((PORT > 0 && PORT < 65536)) || die "Неверный порт: $PORT"
   [[ $NAME =~ ^[A-Za-z0-9_.-]{1,32}$ ]] || die "Имя: латиница, цифры, _ . - (до 32 символов)."
   [[ $PANEL_SSL =~ ^(auto|ip|none)$ ]] || die "--panel-ssl: auto, ip или none"
+  if [[ -n $tgweb_domain ]]; then
+    [[ $tgweb_domain =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && $tgweb_domain == *.* ]] || die "--tgweb-domain: укажите корректное DNS-имя"
+    TGWEB_DOMAIN=${tgweb_domain,,}
+  fi
   if [[ -n $DOMAIN ]]; then
     [[ $DOMAIN =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && $DOMAIN == *.* ]] || die "--domain: укажите корректное DNS-имя, например connect.example.com"
     DOMAIN=${DOMAIN,,}
@@ -887,6 +893,7 @@ HTML
     [[ -n $reality_sni ]] && echo "        $reality_sni 127.0.0.1:${INNER[reality]};"
     [[ -n $xhttp_sni && $xhttp_sni != "$reality_sni" ]] && echo "        $xhttp_sni 127.0.0.1:${INNER[xhttp]};"
     [[ -n $mt_sni ]] && echo "        $mt_sni 127.0.0.1:${INNER[mtproto]};"
+    [[ -n $TGWEB_DOMAIN ]] && echo "        $TGWEB_DOMAIN 127.0.0.1:${INNER[web]};"
     echo "        default 127.0.0.1:${INNER[web]};"
     echo "    }"
     echo "    server {"
@@ -916,7 +923,7 @@ HTML
 # Сгенерировано 3x-ui.sh (3X-UI KIT) — перезаписывается при повторном запуске.
 server {
     listen 127.0.0.1:${INNER[web]} ssl http2 proxy_protocol;
-    server_name ${DOMAIN:-_};
+    server_name ${DOMAIN:-_} ${TGWEB_DOMAIN:-};
     ssl_certificate $CERT;
     ssl_certificate_key $KEY;
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -927,6 +934,21 @@ server {
     absolute_redirect off;
     access_log off;
 $locs
+    # TgWebProxy is a separate loopback-only HTTP backend. nginx owns TLS and
+    # preserves the public Host used by TgWebProxy capability validation.
+    location /tgweb/ {
+        proxy_pass http://127.0.0.1:${INNER[tgweb]}/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$proxy_protocol_addr;
+        proxy_set_header X-Forwarded-For \$proxy_protocol_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        client_max_body_size 0;
+    }
     location = ${SUB_PATH}qrcode.js {
         alias /etc/3x-ui/sub_templates/kit/qrcode.js;
         default_type application/javascript;
@@ -1093,6 +1115,7 @@ usage() {
                       none — панель только через SSH-туннель (по умолчанию выбирается сам)
   --domain имя        отдельный Let's Encrypt сертификат для субдомена, например connect.example.com
                       (существующие example.com / *.example.com не изменяются)
+  --tgweb-domain имя   SNI для TgWebProxy на общем TCP/443; backend остаётся на 127.0.0.1:4600
   --fallback-url URL  обычные HTTPS-запросы на --domain перенаправлять, например https://example.com
   --cert файл --key файл  свой сертификат вместо автоматического Let's Encrypt;
                       тогда --host — имя/IP из сертификата
