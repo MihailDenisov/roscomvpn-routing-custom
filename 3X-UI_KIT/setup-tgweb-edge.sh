@@ -10,7 +10,7 @@ die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'USAGE'
 Usage:
-  setup-tgweb-edge.sh --main-ip MAIN_IPV4 --domain web.example.com [--ssh-port PORT]
+  setup-tgweb-edge.sh (--main-ip MAIN_IPV4 | --main-host MAIN_HOST) --domain web.example.com [--ssh-port PORT]
 
 The edge:
   TCP/443 -> MAIN:443  (raw TLS; SNI and certificate stay on MAIN)
@@ -22,11 +22,13 @@ USAGE
 
 [[ $EUID -eq 0 ]] || die "run as root"
 MAIN_IP=""
+MAIN_HOST=""
 DOMAIN=""
 SSH_PORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --main-ip) MAIN_IP=${2:-}; shift 2 ;;
+    --main-host) MAIN_HOST=${2:-}; shift 2 ;;
     --domain) DOMAIN=${2:-}; shift 2 ;;
     --ssh-port) SSH_PORT=${2:-}; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -34,7 +36,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ $MAIN_IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "--main-ip must be IPv4"
+if [[ -n $MAIN_HOST ]]; then
+  [[ $MAIN_HOST =~ ^[A-Za-z0-9.-]+$ && $MAIN_HOST == *.* ]] || die "--main-host is invalid"
+  resolved=$(getent ahostsv4 "$MAIN_HOST" 2>/dev/null | awk 'NR==1{print $1}')
+  [[ $resolved =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "cannot resolve IPv4 for $MAIN_HOST"
+  if [[ -n $MAIN_IP && $MAIN_IP != "$resolved" ]]; then
+    die "--main-ip $MAIN_IP does not match $MAIN_HOST ($resolved)"
+  fi
+  MAIN_IP=$resolved
+fi
+[[ $MAIN_IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "pass --main-ip or --main-host"
 [[ $DOMAIN =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ && $DOMAIN == *.* ]] || die "--domain is invalid"
 command -v apt-get >/dev/null || die "Ubuntu/Debian with apt is required"
 
@@ -74,6 +85,7 @@ done
 install -d -m 700 /etc/tgweb-edge
 cat >/etc/tgweb-edge/config <<EOF
 MAIN_IP=$MAIN_IP
+MAIN_HOST=$MAIN_HOST
 EDGE_IP=$EDGE_IP
 DOMAIN=$DOMAIN
 SSH_PORT=$SSH_PORT
