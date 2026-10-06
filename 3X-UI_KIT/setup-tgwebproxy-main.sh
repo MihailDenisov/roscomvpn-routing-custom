@@ -165,4 +165,17 @@ say "installed without changing MTProto/MTG"
 echo "public: https://$DOMAIN:443"
 echo "backend: $TGWP_LISTEN"
 echo "admin: $TGWP_ADMIN (loopback only)"
+install -d -m 700 /etc/kit
+cat >/etc/kit/tgweb.env <<EOF
+TGWEB_DOMAIN=$DOMAIN
+TGWEB_ADMIN=http://$TGWP_ADMIN
+TGWEB_TOKEN_FILE=$TOKEN_FILE
+EOF
+chmod 600 /etc/kit/tgweb.env
+
+say "installed without changing MTProto/MTG"
+echo "public: https://$DOMAIN:443"
+echo "backend: $TGWP_LISTEN"
+echo "admin: $TGWP_ADMIN (loopback only)"
 echo "admin token: $TOKEN_FILE"
+echo "kit integration: /etc/kit/tgweb.env"
