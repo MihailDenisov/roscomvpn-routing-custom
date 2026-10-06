@@ -5,6 +5,9 @@ set -Eeuo pipefail
 
 TGWP_REPO=${TGWP_REPO:-https://github.com/MihailDenisov/tgwebproxy-multi.git}
 TGWP_REF=${TGWP_REF:-feature/3xui-integration}
+GO_VERSION=1.26.8
+GO_ROOT=/opt/tgwebproxy-go/go${GO_VERSION}
+RECONCILE_URL=${RECONCILE_URL:-https://raw.githubusercontent.com/MihailDenisov/roscomvpn-routing-custom/feature/tgwebproxy-integration/3X-UI_KIT/tgweb-reconcile.sh}
 TGWP_LISTEN=127.0.0.1:4600
 TGWP_ADMIN=127.0.0.1:9601
 TGWP_DIR=/etc/tgwebproxy
@@ -42,11 +45,31 @@ fi
 
 say "building TgWebProxy $TGWP_REF"
 apt-get update -qq
-apt-get install -y -qq git golang-go ca-certificates >/dev/null
+apt-get install -y -qq git curl ca-certificates >/dev/null
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+arch=$(uname -m)
+case "$arch" in
+  x86_64) go_arch=amd64; go_sha=d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b ;;
+  aarch64|arm64) go_arch=arm64; go_sha=211ffced9dcb9633a55eac6364816ec0ddd951389a740e88fa8b3337971bdda0 ;;
+  *) die "unsupported architecture for bundled Go toolchain: $arch" ;;
+esac
+if [[ ! -x "$GO_ROOT/bin/go" ]]; then
+  say "installing private Go $GO_VERSION toolchain"
+  install -d -m 0755 "$(dirname "$GO_ROOT")"
+  tarball="$tmp/go.tar.gz"
+  curl -fsSL --retry 3 -o "$tarball" "https://go.dev/dl/go$GO_VERSION.linux-$go_arch.tar.gz"
+  echo "$go_sha  $tarball" | sha256sum -c -
+  rm -rf "$GO_ROOT"
+  mkdir -p "$GO_ROOT"
+  tar -C "$GO_ROOT" --strip-components=1 -xzf "$tarball"
+fi
+GO="$GO_ROOT/bin/go"
+"$GO" version
+
 git clone -q --depth 1 --branch "$TGWP_REF" "$TGWP_REPO" "$tmp/src"
-(cd "$tmp/src" && go test ./... && go build -trimpath -o "$tmp/tgwebproxy" ./cmd/tgwebproxy)
+(cd "$tmp/src" && "$GO" test ./... && "$GO" build -trimpath -o "$tmp/tgwebproxy" ./cmd/tgwebproxy)
 install -m 0755 "$tmp/tgwebproxy" "$TGWP_BIN"
 
 id tgwebproxy >/dev/null 2>&1 || useradd --system --home /var/lib/tgwebproxy --shell /usr/sbin/nologin tgwebproxy
@@ -161,10 +184,6 @@ done
 curl -fsS -m 2 "http://$TGWP_ADMIN/healthz" >/dev/null ||
   die "TgWebProxy health check failed; see: journalctl -u tgwebproxy -n 50"
 
-say "installed without changing MTProto/MTG"
-echo "public: https://$DOMAIN:443"
-echo "backend: $TGWP_LISTEN"
-echo "admin: $TGWP_ADMIN (loopback only)"
 install -d -m 700 /etc/kit
 cat >/etc/kit/tgweb.env <<EOF
 TGWEB_DOMAIN=$DOMAIN
@@ -173,8 +192,15 @@ TGWEB_TOKEN_FILE=$TOKEN_FILE
 EOF
 chmod 600 /etc/kit/tgweb.env
 
+reconcile_src="$tmp/tgweb-reconcile.sh"
 if [[ -f "$(dirname "$0")/tgweb-reconcile.sh" ]]; then
-  install -m 0755 "$(dirname "$0")/tgweb-reconcile.sh" /usr/local/sbin/kit-tgweb-reconcile
+  cp "$(dirname "$0")/tgweb-reconcile.sh" "$reconcile_src"
+else
+  curl -fsSL --retry 3 -o "$reconcile_src" "$RECONCILE_URL"
+fi
+bash -n "$reconcile_src"
+if [[ -s "$reconcile_src" ]]; then
+  install -m 0755 "$reconcile_src" /usr/local/sbin/kit-tgweb-reconcile
   cat >/etc/systemd/system/kit-tgweb-reconcile.service <<EOF
 [Unit]
 Description=Reconcile shared 3x-ui and TgWebProxy traffic limits
