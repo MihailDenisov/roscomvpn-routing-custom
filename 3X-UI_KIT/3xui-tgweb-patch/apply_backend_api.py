@@ -5,7 +5,7 @@ R=Path(sys.argv[1] if len(sys.argv)>1 else ".")
 def rw(path,old,new):
  p=R/path; s=p.read_text()
  if s.count(old)!=1: raise SystemExit(f"{path}: anchor count {s.count(old)}")
- p.write_text(s.replace(old,new,1))
+ p.write_text(s.replace(old,new,1)); print("patched",path)
 rw("internal/web/service/client.go",
 '''type ClientWithAttachments struct {
 	model.ClientRecord
