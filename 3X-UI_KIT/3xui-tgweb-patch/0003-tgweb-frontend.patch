@@ -303,6 +303,36 @@ diff --git a/frontend/src/pages/inbounds/useInbounds.ts b/frontend/src/pages/inb
 +  Protocols.TGWEB,
  ];
 
+diff --git a/frontend/src/pages/clients/ClientFormModal.tsx b/frontend/src/pages/clients/ClientFormModal.tsx
+--- a/frontend/src/pages/clients/ClientFormModal.tsx
++++ b/frontend/src/pages/clients/ClientFormModal.tsx
+@@ -64,4 +64,5 @@ const MULTI_CLIENT_PROTOCOLS = new Set([
+   'mtproto',
+   'amneziawg',
+   'tuic',
++  'tgweb',
+ ]);
+
+diff --git a/frontend/src/pages/clients/BulkAttachInboundsModal.tsx b/frontend/src/pages/clients/BulkAttachInboundsModal.tsx
+--- a/frontend/src/pages/clients/BulkAttachInboundsModal.tsx
++++ b/frontend/src/pages/clients/BulkAttachInboundsModal.tsx
+@@ -16,4 +16,5 @@ const MULTI_USER_PROTOCOLS = new Set([
+   'mtproto',
+   'amneziawg',
+   'tuic',
++  'tgweb',
+ ]);
+
+diff --git a/frontend/src/pages/clients/BulkDetachInboundsModal.tsx b/frontend/src/pages/clients/BulkDetachInboundsModal.tsx
+--- a/frontend/src/pages/clients/BulkDetachInboundsModal.tsx
++++ b/frontend/src/pages/clients/BulkDetachInboundsModal.tsx
+@@ -16,4 +16,5 @@ const MULTI_USER_PROTOCOLS = new Set([
+   'mtproto',
+   'amneziawg',
+   'tuic',
++  'tgweb',
+ ]);
+
 diff --git a/frontend/src/test/tgweb-inbound-form.test.ts b/frontend/src/test/tgweb-inbound-form.test.ts
 new file mode 100644
 --- /dev/null
