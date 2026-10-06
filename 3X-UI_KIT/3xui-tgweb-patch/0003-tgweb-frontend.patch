@@ -88,9 +88,15 @@ diff --git a/frontend/src/schemas/protocols/inbound/index.ts b/frontend/src/sche
 diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/inbound-defaults.ts
 --- a/frontend/src/lib/xray/inbound-defaults.ts
 +++ b/frontend/src/lib/xray/inbound-defaults.ts
-@@ -14,1 +14,2 @@ import type { TrojanClient, TrojanInboundSettings } from '@/schemas/protocols/inbound/trojan';
+@@ -11,7 +11,8 @@ import type {
+   ShadowsocksInboundSettings,
+ } from '@/schemas/protocols/inbound/shadowsocks';
+ import type { TrojanClient, TrojanInboundSettings } from '@/schemas/protocols/inbound/trojan';
  import type { TuicClient, TuicInboundSettings } from '@/schemas/protocols/inbound/tuic';
 +import type { TgwebInboundSettings } from '@/schemas/protocols/inbound/tgweb';
+ import type { TunInboundSettings } from '@/schemas/protocols/inbound/tun';
+ import type { TunnelInboundSettings } from '@/schemas/protocols/inbound/tunnel';
+ import type { VlessClient, VlessInboundSettings } from '@/schemas/protocols/inbound/vless';
 @@ -357,3 +358,11 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
    };
  }
@@ -170,7 +176,9 @@ diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/sr
    ShadowsocksFields,
 +  TgwebFields,
    TuicFields,
-@@ -282,5 +283,6 @@ export default function InboundFormModal({
+@@ -279,12 +280,13 @@ export default function InboundFormModal({
+    * picker and the per-network sub-forms are hidden.
+    */
    const hasSelectableTransport =
      protocol !== Protocols.HYSTERIA &&
      protocol !== Protocols.WIREGUARD &&
@@ -178,6 +186,10 @@ diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/sr
 -    protocol !== Protocols.TUIC;
 +    protocol !== Protocols.TUIC &&
 +    protocol !== Protocols.TGWEB;
+ 
+   const wPort = useWatch({ control, name: 'port' });
+   const wListen = (useWatch({ control, name: 'listen' }) ?? '') as string;
+   const isUdsListen = wListen.startsWith('/') || wListen.startsWith('@');
 @@ -503,4 +505,4 @@ export default function InboundFormModal({
 -    if (protocol === Protocols.MTPROTO) {
 +    if (protocol === Protocols.MTPROTO || protocol === Protocols.TGWEB) {
