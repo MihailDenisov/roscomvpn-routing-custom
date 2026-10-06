@@ -192,6 +192,21 @@ TGWEB_TOKEN_FILE=$TOKEN_FILE
 EOF
 chmod 600 /etc/kit/tgweb.env
 
+# Update the installed KIT CLI so lifecycle commands know about TgWebProxy.
+if [[ -f "$(dirname "$0")/kit.sh" ]]; then
+  cp -a /usr/local/bin/kit "/usr/local/bin/kit.pre-tgweb.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+  install -m 0755 "$(dirname "$0")/kit.sh" /usr/local/bin/kit
+  bash -n /usr/local/bin/kit
+fi
+
+# Update kit-sub so the personal HTML page can show the user's TgWeb link.
+if [[ -f "$(dirname "$0")/kit-sub.py" && -d /usr/local/lib/kit-sub ]]; then
+  cp -a /usr/local/lib/kit-sub/kit_sub.py "/usr/local/lib/kit-sub/kit_sub.py.pre-tgweb.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+  install -m 0644 "$(dirname "$0")/kit-sub.py" /usr/local/lib/kit-sub/kit_sub.py
+  python3 -m py_compile /usr/local/lib/kit-sub/kit_sub.py
+  systemctl restart kit-sub
+fi
+
 install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
 cat >/etc/letsencrypt/renewal-hooks/deploy/tgwebproxy-nginx <<'EOF'
 #!/bin/sh
