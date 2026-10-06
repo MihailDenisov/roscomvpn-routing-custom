@@ -97,7 +97,7 @@ diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/i
  import type { TunInboundSettings } from '@/schemas/protocols/inbound/tun';
  import type { TunnelInboundSettings } from '@/schemas/protocols/inbound/tunnel';
  import type { VlessClient, VlessInboundSettings } from '@/schemas/protocols/inbound/vless';
-@@ -351,12 +352,20 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
+@@ -351,10 +352,18 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
        max_idle_time: 15,
        authentication_timeout: 3,
        max_udp_relay_packet_size: 1500,
@@ -216,7 +216,7 @@ diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/sr
 +        setV('streamSettings', undefined);
 +      } else if (next === Protocols.HYSTERIA) {
          setV('streamSettings', {
-@@ -647,17 +655,19 @@ export default function InboundFormModal({
+@@ -647,15 +655,17 @@ export default function InboundFormModal({
        <FormField name="protocol" label={t('pages.inbounds.protocol')}>
          <Select id="protocol" disabled={mode === 'edit'} options={PROTOCOL_OPTIONS} />
        </FormField>
