@@ -1227,10 +1227,10 @@ index 00000000..b371439d
 +}
 diff --git a/internal/web/job/tgweb_epoch_test.go b/internal/web/job/tgweb_epoch_test.go
 new file mode 100644
-index 00000000..e6b327a6
+index 00000000..44f74426
 --- /dev/null
 +++ b/internal/web/job/tgweb_epoch_test.go
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,494 @@
 +package job
 +
 +import (
@@ -1671,6 +1671,60 @@ index 00000000..e6b327a6
 +		t.Fatalf("compacted row = %+v, want baseline 1500/500, seen 2", row)
 +	}
 +}
++
++// Full cycle for a TgWeb-only client (no client_traffics row, no baseline):
++// ResetAllTraffics advances the epoch from the attachment alone, and the next
++// sync pins the current cumulative runtime counters as the new baseline —
++// effective usage 0, then only post-reset traffic counts.
++func TestTgWebJobEpochResetAllCoversTgWebOnlyClient(t *testing.T) {
++	setupTgWebJobDB(t)
++	seedTgWebInbound(t, 42, "tgweb-web",
++		"{\"publicHost\":\"web.maicraft.tech\",\"publicPort\":443,\"clients\":[]}", true)
++	rec := seedTgWebClient(t, "mv", 42) // NO client_traffics row, NO baseline.
++	const total = int64(10000)
++	if err := database.GetDB().Model(&model.ClientRecord{}).Where("id = ?", rec.Id).
++		Update("total_gb", total).Error; err != nil {
++		t.Fatalf("set quota: %v", err)
++	}
++
++	// Runtime holds 1000 cumulative bytes from the old period.
++	api := &epochAPI{domains: []tgweb.SnapshotDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []tgweb.SnapshotClient{{
++			PolicyClient: tgweb.PolicyClient{Name: "mv", Secret: "s3cr3t", Enabled: true},
++			BytesUp:      700, BytesDown: 300,
++		}},
++	}}}
++	tgweb.SetManagerForTest(tgweb.NewManager(api))
++
++	if _, err := (&service.ClientService{}).ResetAllTraffics(); err != nil {
++		t.Fatalf("ResetAllTraffics: %v", err)
++	}
++	if seq := epochSeq(t, "mv"); seq != 1 {
++		t.Fatalf("recorded reset seq = %d, want 1 for the TgWeb-only client", seq)
++	}
++
++	NewTgWebJob().Run()
++	row, ok := baselineRow(t, "mv", "web.maicraft.tech")
++	if !ok {
++		t.Fatal("baseline row not created on first sync")
++	}
++	if row.BaselineUp != 700 || row.BaselineDown != 300 || row.SeenResetSeq != 1 {
++		t.Fatalf("post-ResetAll row = %+v, want baseline 700/300, seen 1", row)
++	}
++	pol, ok := api.policy("web.maicraft.tech", "mv")
++	if !ok || pol.QuotaBytes != total {
++		t.Fatalf("effective usage must be 0 after ResetAll: policy = %+v ok=%v, want quota %d", pol, ok, total)
++	}
++
++	// New traffic counts only from the new epoch baseline.
++	api.domains[0].Clients[0].BytesUp = 825 // total 1125, delta 125
++	NewTgWebJob().Run()
++	pol, ok = api.policy("web.maicraft.tech", "mv")
++	if !ok || pol.QuotaBytes != total-125 {
++		t.Fatalf("post-reset delta must be 125: policy = %+v ok=%v, want quota %d", pol, ok, total-125)
++	}
++}
 diff --git a/internal/web/job/tgweb_job.go b/internal/web/job/tgweb_job.go
 index d4cbf389..1cd60c53 100644
 --- a/internal/web/job/tgweb_job.go
@@ -1803,7 +1857,7 @@ index d4cbf389..1cd60c53 100644
  	defer cancel()
  	if err := tgweb.GetManager().Reconcile(ctx, desired); err != nil {
 diff --git a/internal/web/service/client_traffic.go b/internal/web/service/client_traffic.go
-index 93016eea..dfc4a19d 100644
+index 93016eea..54a12c23 100644
 --- a/internal/web/service/client_traffic.go
 +++ b/internal/web/service/client_traffic.go
 @@ -6,6 +6,7 @@ import (
@@ -1835,17 +1889,36 @@ index 93016eea..dfc4a19d 100644
  		if err := clearGlobalTraffic(tx, resetEmails...); err != nil {
  			return err
  		}
-@@ -224,6 +232,16 @@ func (s *ClientService) ResetAllTraffics() (bool, error) {
+@@ -224,6 +232,35 @@ func (s *ClientService) ResetAllTraffics() (bool, error) {
  				return res.Error
  			}
  			affected = res.RowsAffected
 +			// ResetAll covers every canonical client that participates in the
-+			// reset target set, not just clients that already have a TgWeb
-+			// baseline row: derive the set from client_traffics itself.
++			// shared quota, not just clients that already have a TgWeb
++			// baseline row. The target set is the union of:
++			//  A. traffic participants (client_traffics) — the ordinary reset
++			//     target set;
++			//  B. clients attached to a local TgWeb virtual inbound — TgWeb-
++			//     only users may have runtime traffic and no client_traffics
++			//     row at all, and their epoch must advance too.
++			// Attachment comes exclusively from client_inbounds; a failed
++			// target query aborts the whole reset rather than skipping the
++			// TgWeb-only half silently.
 +			var allEmails []string
 +			if err := tx.Model(xray.ClientTraffic{}).Distinct().Pluck("email", &allEmails).Error; err != nil {
 +				return err
 +			}
++			var tgwebEmails []string
++			if err := tx.Table("client_inbounds ci").
++				Select("c.email").
++				Joins("JOIN clients c ON c.id = ci.client_id").
++				Joins("JOIN inbounds ib ON ib.id = ci.inbound_id").
++				Where("ib.protocol = ? AND ib.node_id IS NULL", model.TgWeb).
++				Distinct().
++				Pluck("c.email", &tgwebEmails).Error; err != nil {
++				return err
++			}
++			allEmails = append(allEmails, tgwebEmails...)
 +			if err := tgweb.MarkClientsReset(tx, allEmails); err != nil {
 +				return err
 +			}
@@ -2063,10 +2136,10 @@ index 00000000..f2ce9c11
 +}
 diff --git a/internal/web/service/tgweb_reset_test.go b/internal/web/service/tgweb_reset_test.go
 new file mode 100644
-index 00000000..c152b8e1
+index 00000000..fcd92e1f
 --- /dev/null
 +++ b/internal/web/service/tgweb_reset_test.go
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,343 @@
 +package service
 +
 +import (
@@ -2314,5 +2387,99 @@ index 00000000..c152b8e1
 +	}
 +	if tr.Up != 100 || tr.Down != 50 {
 +		t.Fatalf("VPN counters = %d/%d, want 100/50 (transaction rolled back)", tr.Up, tr.Down)
++	}
++}
++
++// A TgWeb-only client — attached to a TgWeb virtual inbound but without any
++// client_traffics row — participates in the shared quota, so ResetAll must
++// advance its epoch too. This is the main regression of the iteration.
++func TestResetAllCoversTgWebOnlyClient(t *testing.T) {
++	setupConflictDB(t)
++	seedInboundConflict(t, "tgweb-resetall", "", 0, model.TgWeb, "",
++		"{\"publicHost\":\"web.maicraft.tech\",\"publicPort\":443,\"clients\":[]}")
++	ib := loadInboundByTag(t, "tgweb-resetall")
++	rec := model.ClientRecord{Email: "mv", Enable: true}
++	if err := database.GetDB().Create(&rec).Error; err != nil {
++		t.Fatalf("client record: %v", err)
++	}
++	if err := database.GetDB().Create(&model.ClientInbound{ClientId: rec.Id, InboundId: ib.Id}).Error; err != nil {
++		t.Fatalf("attach: %v", err)
++	}
++	// Deliberately NO client_traffics row and NO reset epoch row for mv.
++
++	if _, err := (&ClientService{}).ResetAllTraffics(); err != nil {
++		t.Fatalf("ResetAllTraffics: %v", err)
++	}
++
++	if row, ok := epochRow(t, "mv"); !ok || row.ResetSeq != 1 {
++		t.Fatalf("epoch row = %+v ok=%v, want reset_seq 1 for the TgWeb-only client", row, ok)
++	}
++}
++
++// A client with neither client_traffics nor a TgWeb attachment does not
++// participate in the shared quota and must not receive a TgWeb reset epoch.
++func TestResetAllSkipsUnrelatedClient(t *testing.T) {
++	setupConflictDB(t)
++	if err := database.GetDB().Create(&model.ClientRecord{Email: "alice", Enable: true}).Error; err != nil {
++		t.Fatalf("client record: %v", err)
++	}
++
++	if _, err := (&ClientService{}).ResetAllTraffics(); err != nil {
++		t.Fatalf("ResetAllTraffics: %v", err)
++	}
++
++	if _, ok := epochRow(t, "alice"); ok {
++		t.Fatal("unrelated client (no traffic, no TgWeb attachment) must not get a reset epoch")
++	}
++}
++
++// Combined target set: a plain VPN participant, a TgWeb-only client, and a
++// client in BOTH sets must each advance exactly once — union semantics with
++// dedupe, never a double bump.
++func TestResetAllCombinedTargetsDeduplicate(t *testing.T) {
++	setupConflictDB(t)
++	seedInboundConflict(t, "tgweb-combined", "", 0, model.TgWeb, "",
++		"{\"publicHost\":\"web.maicraft.tech\",\"publicPort\":443,\"clients\":[]}")
++	ib := loadInboundByTag(t, "tgweb-combined")
++
++	// bob: client_traffics only.
++	if err := database.GetDB().Create(&xray.ClientTraffic{Email: "bob", Up: 9, Down: 9, Enable: true}).Error; err != nil {
++		t.Fatalf("seed bob traffic: %v", err)
++	}
++	// carol: TgWeb attachment only (no client_traffics row).
++	carol := model.ClientRecord{Email: "carol", Enable: true}
++	if err := database.GetDB().Create(&carol).Error; err != nil {
++		t.Fatalf("carol record: %v", err)
++	}
++	if err := database.GetDB().Create(&model.ClientInbound{ClientId: carol.Id, InboundId: ib.Id}).Error; err != nil {
++		t.Fatalf("carol attach: %v", err)
++	}
++	// mv: BOTH client_traffics row and TgWeb attachment — must bump once.
++	if err := database.GetDB().Create(&xray.ClientTraffic{Email: "mv", Up: 9, Down: 9, Enable: true}).Error; err != nil {
++		t.Fatalf("seed mv traffic: %v", err)
++	}
++	mv := model.ClientRecord{Email: "mv", Enable: true}
++	if err := database.GetDB().Create(&mv).Error; err != nil {
++		t.Fatalf("mv record: %v", err)
++	}
++	if err := database.GetDB().Create(&model.ClientInbound{ClientId: mv.Id, InboundId: ib.Id}).Error; err != nil {
++		t.Fatalf("mv attach: %v", err)
++	}
++
++	if _, err := (&ClientService{}).ResetAllTraffics(); err != nil {
++		t.Fatalf("ResetAllTraffics: %v", err)
++	}
++
++	for _, email := range []string{"bob", "carol", "mv"} {
++		if row, ok := epochRow(t, email); !ok || row.ResetSeq != 1 {
++			t.Fatalf("%s epoch row = %+v ok=%v, want reset_seq exactly 1", email, row, ok)
++		}
++	}
++	var n int64
++	if err := database.GetDB().Model(&model.TgWebResetEpoch{}).Count(&n).Error; err != nil {
++		t.Fatalf("count epochs: %v", err)
++	}
++	if n != 3 {
++		t.Fatalf("epoch rows = %d, want exactly 3 (no duplicates from the union)", n)
 +	}
 +}
