@@ -44,6 +44,10 @@ wput_clients() {
 }
 
 xc=$(xget clients/list | jq -c 'if type == "array" then . else .clients end')
+# A patched panel exposes TgWeb as an ordinary inbound. If such an inbound
+# exists, client.inboundIds is authoritative. Until then keep the legacy
+# [tgweb:off] marker semantics so rollout is backward-compatible.
+tgweb_inbound_id=$(xget inbounds/options | jq -r '[.[] | select(.protocol == "tgweb") | .id] | first // empty')
 wc=$(wget_clients)
 now_ms=$(($(date +%s) * 1000))
 changed=no
@@ -58,11 +62,12 @@ while IFS= read -r name; do
   total=$(jq -r '.totalGB // 0' <<<"$primary")
   expiry=$(jq -r '.expiryTime // 0' <<<"$primary")
   panel_enabled=$(jq -r '.enable // false' <<<"$primary")
-  # New patched 3x-ui is the source of truth. During the transition only,
-  # fall back to the legacy comment marker when externalInboundKeys is absent.
+  # Patched 3x-ui source of truth: ordinary client_inbounds attachment to the
+  # tgweb protocol inbound. Legacy comment is transition-only when no tgweb
+  # inbound exists yet.
   attached=false
-  if jq -e 'has("externalInboundKeys")' <<<"$primary" >/dev/null; then
-    jq -e '(.externalInboundKeys // []) | index("tgweb") != null' <<<"$primary" >/dev/null && attached=true
+  if [[ -n $tgweb_inbound_id ]]; then
+    jq -e --argjson i "$tgweb_inbound_id" '(.inboundIds // []) | index($i) != null' <<<"$primary" >/dev/null && attached=true
   else
     comment=$(jq -r '.comment // ""' <<<"$primary")
     [[ $comment != *"[tgweb:off]"* ]] && attached=true
