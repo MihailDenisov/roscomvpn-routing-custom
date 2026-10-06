@@ -115,7 +115,7 @@ index 82acec7b..8651c5f9 100644
            />
          ),
 diff --git a/frontend/src/test/tgweb-sub-card.test.tsx b/frontend/src/test/tgweb-sub-card.test.tsx
-new file mode 100755
+new file mode 100644
 index 00000000..65b72ea4
 --- /dev/null
 +++ b/frontend/src/test/tgweb-sub-card.test.tsx
@@ -276,7 +276,7 @@ index ec5a5181..43a8c322 100644
  
  // ResolveRequest extracts scheme, host, and header information from an HTTP request.
 diff --git a/internal/sub/tgweb.go b/internal/sub/tgweb.go
-new file mode 100755
+new file mode 100644
 index 00000000..43b451a8
 --- /dev/null
 +++ b/internal/sub/tgweb.go
@@ -402,7 +402,7 @@ index 00000000..43b451a8
 +	return nil
 +}
 diff --git a/internal/sub/tgweb_test.go b/internal/sub/tgweb_test.go
-new file mode 100755
+new file mode 100644
 index 00000000..10b280ae
 --- /dev/null
 +++ b/internal/sub/tgweb_test.go
@@ -641,7 +641,7 @@ index 00000000..10b280ae
 +	}
 +}
 diff --git a/internal/tgweb/manager.go b/internal/tgweb/manager.go
-index 51c3d020..00f40c74 100644
+index 51c3d020..e5f84354 100644
 --- a/internal/tgweb/manager.go
 +++ b/internal/tgweb/manager.go
 @@ -17,6 +17,12 @@ type DesiredClient struct {
@@ -662,7 +662,7 @@ index 51c3d020..00f40c74 100644
  type errorAPI struct{ err error }
  
 -func (e *errorAPI) Get(context.Context) ([]SnapshotDomain, error) { return nil, e.err }
-+func (e *errorAPI) Get(context.Context) ([]SnapshotDomain, error)    { return nil, e.err }
++func (e *errorAPI) Get(context.Context) ([]SnapshotDomain, error)     { return nil, e.err }
  func (e *errorAPI) Put(context.Context, string, []PolicyClient) error { return e.err }
  
 +// Snapshot returns the raw runtime state. Callers that reconcile epochs
@@ -696,7 +696,7 @@ index 51c3d020..00f40c74 100644
  					quota = 1
  				}
 diff --git a/internal/tgweb/manager_test.go b/internal/tgweb/manager_test.go
-index 56f5ec81..355fe2cd 100644
+index 56f5ec81..8451a9c3 100644
 --- a/internal/tgweb/manager_test.go
 +++ b/internal/tgweb/manager_test.go
 @@ -63,7 +63,8 @@ func TestReconcilePreservesSecretAndDisablesDetached(t *testing.T) {
@@ -709,6 +709,15 @@ index 56f5ec81..355fe2cd 100644
  		t.Fatalf("mv policy = %+v", mv)
  	}
  	old, ok := byName(put, "old")
+@@ -77,7 +78,7 @@ func TestReconcileSharedQuotaIncludesCurrentWebUsage(t *testing.T) {
+ 		Domain: "web.maicraft.tech",
+ 		Clients: []SnapshotClient{{
+ 			PolicyClient: PolicyClient{Name: "mv", Secret: "00112233445566778899aabbccddeeff", Enabled: true},
+-			BytesUp: 30, BytesDown: 20,
++			BytesUp:      30, BytesDown: 20,
+ 		}},
+ 	}}}
+ 	m := NewManager(api)
 @@ -138,3 +139,133 @@ func TestReconcileRuntimeFailureIsReturnedForRetry(t *testing.T) {
  		t.Fatalf("Reconcile error = %v, want %v", err, want)
  	}
@@ -845,10 +854,10 @@ index 56f5ec81..355fe2cd 100644
 +}
 diff --git a/internal/tgweb/reset.go b/internal/tgweb/reset.go
 new file mode 100644
-index 00000000..a5250d4a
+index 00000000..a554a3f9
 --- /dev/null
 +++ b/internal/tgweb/reset.go
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,52 @@
 +package tgweb
 +
 +import (
@@ -879,14 +888,17 @@ index 00000000..a5250d4a
 +		return
 +	}
 +	bump := func(batch []string) {
-+		q := tx.Model(&model.TgWebTrafficBaseline{}).
-+			Update("reset_seq", gorm.Expr("reset_seq + 1"))
-+		if len(batch) > 0 {
-+			q = tx.Model(&model.TgWebTrafficBaseline{}).
-+				Where("email IN ?", batch).
-+				Update("reset_seq", gorm.Expr("reset_seq + 1"))
++		// Always build the statement with an explicit predicate: a batch
++		// scopes to exactly those emails, and an empty batch is a
++		// deliberate all-row update ("1 = 1"), never an accidental
++		// unscoped UPDATE that relies on ORM safety-guard behaviour.
++		q := tx.Model(&model.TgWebTrafficBaseline{})
++		if len(batch) == 0 {
++			q = q.Where("1 = 1")
++		} else {
++			q = q.Where("email IN ?", batch)
 +		}
-+		if err := q.Error; err != nil {
++		if err := q.Update("reset_seq", gorm.Expr("reset_seq + 1")).Error; err != nil {
 +			logger.Warning("tgweb: record quota reset epoch failed:", err)
 +		}
 +	}
@@ -899,7 +911,7 @@ index 00000000..a5250d4a
 +	}
 +}
 diff --git a/internal/web/job/tgweb_e2e_test.go b/internal/web/job/tgweb_e2e_test.go
-new file mode 100755
+new file mode 100644
 index 00000000..b371439d
 --- /dev/null
 +++ b/internal/web/job/tgweb_e2e_test.go
@@ -1128,7 +1140,7 @@ index 00000000..b371439d
 +	}
 +}
 diff --git a/internal/web/job/tgweb_epoch_test.go b/internal/web/job/tgweb_epoch_test.go
-new file mode 100755
+new file mode 100644
 index 00000000..f50f1585
 --- /dev/null
 +++ b/internal/web/job/tgweb_epoch_test.go
@@ -1577,6 +1589,24 @@ index 93016eea..365c4156 100644
  			if err := tx.Where("1 = 1").Delete(&model.ClientGlobalTraffic{}).Error; err != nil {
  				return err
  			}
+diff --git a/internal/web/service/inbound.go b/internal/web/service/inbound.go
+index 0e61d891..d3ff0c11 100644
+--- a/internal/web/service/inbound.go
++++ b/internal/web/service/inbound.go
+@@ -1457,7 +1457,12 @@ func (s *InboundService) delInbound(id int) (bool, func(), error) {
+ 	var ib model.Inbound
+ 	loadErr := db.Model(model.Inbound{}).Where("id = ?", id).First(&ib).Error
+ 	if loadErr == nil {
+-		shouldPushToRuntime := ib.NodeID != nil || ib.Enable
++		// TgWeb inbounds are virtual control-plane rows: they never exist in
++		// the Xray runtime config, so deleting one must not push a runtime
++		// delete (which would fail on the missing tag and force a needless
++		// Xray restart). Fail-closed of the runtime credential is the TgWeb
++		// reconciler's job, driven by the removed desired state.
++		shouldPushToRuntime := (ib.NodeID != nil || ib.Enable) && ib.Protocol != model.TgWeb
+ 		if shouldPushToRuntime {
+ 			if ib.NodeID != nil {
+ 				rt, push, _, perr := s.nodePushPlan(&ib)
 diff --git a/internal/web/service/inbound_traffic.go b/internal/web/service/inbound_traffic.go
 index 7f4acb7d..02276502 100644
 --- a/internal/web/service/inbound_traffic.go
@@ -1605,12 +1635,171 @@ index 7f4acb7d..02276502 100644
  		if err := tx.Where("email = ?", clientEmail).Delete(&model.NodeClientTraffic{}).Error; err != nil {
  			return err
  		}
+diff --git a/internal/web/service/tgweb_delete_test.go b/internal/web/service/tgweb_delete_test.go
+new file mode 100644
+index 00000000..f2ce9c11
+--- /dev/null
++++ b/internal/web/service/tgweb_delete_test.go
+@@ -0,0 +1,153 @@
++package service
++
++import (
++	"context"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/mhsanaei/3x-ui/v3/internal/database"
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++	"github.com/mhsanaei/3x-ui/v3/internal/tgweb"
++)
++
++// tgwebDeleteAPI is an in-memory tgweb.API double recording PUT policies.
++type tgwebDeleteAPI struct {
++	mu      sync.Mutex
++	domains map[string][]tgweb.PolicyClient
++}
++
++func newTgwebDeleteAPI() *tgwebDeleteAPI {
++	return &tgwebDeleteAPI{domains: map[string][]tgweb.PolicyClient{}}
++}
++
++func (a *tgwebDeleteAPI) Get(context.Context) ([]tgweb.SnapshotDomain, error) {
++	a.mu.Lock()
++	defer a.mu.Unlock()
++	out := make([]tgweb.SnapshotDomain, 0, len(a.domains))
++	for domain, clients := range a.domains {
++		snap := tgweb.SnapshotDomain{Domain: domain}
++		for _, c := range clients {
++			snap.Clients = append(snap.Clients, tgweb.SnapshotClient{PolicyClient: c})
++		}
++		out = append(out, snap)
++	}
++	return out, nil
++}
++
++func (a *tgwebDeleteAPI) Put(_ context.Context, domain string, clients []tgweb.PolicyClient) error {
++	a.mu.Lock()
++	defer a.mu.Unlock()
++	a.domains[strings.ToLower(strings.TrimSpace(domain))] = append([]tgweb.PolicyClient(nil), clients...)
++	return nil
++}
++
++func (a *tgwebDeleteAPI) client(domain, name string) (tgweb.PolicyClient, bool) {
++	a.mu.Lock()
++	defer a.mu.Unlock()
++	for _, c := range a.domains[domain] {
++		if c.Name == name {
++			return c, true
++		}
++	}
++	return tgweb.PolicyClient{}, false
++}
++
++// TestDelInboundTgWebViaServicePath deletes a TgWeb inbound through the same
++// InboundService.DelInbound path the UI/API uses (not a raw DB delete) and
++// verifies the whole fail-closed contract:
++//  1. the TgWeb inbound row is gone;
++//  2. its attachment relations are cleared by the standard DetachInbound;
++//  3. the next reconcile leaves no usable orphan runtime credential
++//     (disabled, secret preserved for reattachment);
++//  4. the same client's normal VPN inbound and attachment are untouched;
++//  5. the delete never requests an Xray restart (TgWeb is virtual and never
++//     exists in the Xray runtime config).
++func TestDelInboundTgWebViaServicePath(t *testing.T) {
++	setupConflictDB(t)
++
++	seedInboundConflict(t, "tgweb-del", "", 0, model.TgWeb, "",
++		`{"publicHost":"web.maicraft.tech","publicPort":443,"clients":[]}`)
++	seedInboundConflict(t, "vless-del", "", 8443, model.VLESS, "{}",
++		`{"clients":[]}`)
++	tgwebIB := loadInboundByTag(t, "tgweb-del")
++	vlessIB := loadInboundByTag(t, "vless-del")
++
++	rec := model.ClientRecord{Email: "mv", Enable: true}
++	if err := database.GetDB().Create(&rec).Error; err != nil {
++		t.Fatalf("client record: %v", err)
++	}
++	for _, ibID := range []int{vlessIB.Id, tgwebIB.Id} {
++		if err := database.GetDB().Create(&model.ClientInbound{ClientId: rec.Id, InboundId: ibID}).Error; err != nil {
++			t.Fatalf("attach client to inbound %d: %v", ibID, err)
++		}
++	}
++
++	// Runtime already holds a provisioned, enabled credential for mv.
++	api := newTgwebDeleteAPI()
++	api.domains["web.maicraft.tech"] = []tgweb.PolicyClient{{
++		Name: "mv", Secret: "00112233445566778899aabbccddeeff", Enabled: true,
++	}}
++	mgr := tgweb.NewManager(api)
++	tgweb.SetManagerForTest(mgr)
++	t.Cleanup(func() { tgweb.SetManagerForTest(nil) })
++
++	needRestart, err := (&InboundService{}).DelInbound(tgwebIB.Id)
++	if err != nil {
++		t.Fatalf("DelInbound: %v", err)
++	}
++	if needRestart {
++		t.Fatal("deleting a virtual TgWeb inbound must not request an Xray restart")
++	}
++
++	// 1. inbound row gone
++	var n int64
++	if err := database.GetDB().Model(&model.Inbound{}).
++		Where("id = ? AND protocol = ?", tgwebIB.Id, model.TgWeb).Count(&n).Error; err != nil {
++		t.Fatalf("count tgweb inbound: %v", err)
++	}
++	if n != 0 {
++		t.Fatalf("tgweb inbound %d still present", tgwebIB.Id)
++	}
++
++	// 2. attachment relations for the deleted inbound cleared
++	if err := database.GetDB().Model(&model.ClientInbound{}).
++		Where("inbound_id = ?", tgwebIB.Id).Count(&n).Error; err != nil {
++		t.Fatalf("count tgweb attachments: %v", err)
++	}
++	if n != 0 {
++		t.Fatalf("orphan client_inbounds rows for deleted tgweb inbound: %d", n)
++	}
++
++	// 4. normal VPN inbound and attachment untouched
++	if err := database.GetDB().Model(&model.Inbound{}).
++		Where("id = ?", vlessIB.Id).Count(&n).Error; err != nil {
++		t.Fatalf("count vless inbound: %v", err)
++	}
++	if n != 1 {
++		t.Fatal("normal VPN inbound must survive a TgWeb inbound delete")
++	}
++	if err := database.GetDB().Model(&model.ClientInbound{}).
++		Where("client_id = ? AND inbound_id = ?", rec.Id, vlessIB.Id).Count(&n).Error; err != nil {
++		t.Fatalf("count vless attachment: %v", err)
++	}
++	if n != 1 {
++		t.Fatal("normal VPN attachment must survive a TgWeb inbound delete")
++	}
++
++	// 3. reconcile with no remaining TgWeb desired state: fail closed,
++	//    credential disabled but secret preserved (reattach keeps it).
++	if err := mgr.Reconcile(context.Background(), nil); err != nil {
++		t.Fatalf("reconcile: %v", err)
++	}
++	pol, ok := api.client("web.maicraft.tech", "mv")
++	if !ok {
++		t.Fatal("runtime credential must be kept (disabled), not deleted")
++	}
++	if pol.Enabled {
++		t.Fatalf("orphan runtime credential must be disabled after inbound delete: %+v", pol)
++	}
++	if pol.Secret != "00112233445566778899aabbccddeeff" {
++		t.Fatalf("secret must be preserved for reattachment: %+v", pol)
++	}
++}
 diff --git a/internal/web/service/tgweb_reset_test.go b/internal/web/service/tgweb_reset_test.go
 new file mode 100644
-index 00000000..8b92be04
+index 00000000..c36e9c36
 --- /dev/null
 +++ b/internal/web/service/tgweb_reset_test.go
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,164 @@
 +package service
 +
 +import (
@@ -1678,6 +1867,100 @@ index 00000000..8b92be04
 +		}
 +		if row.ResetSeq != 1 {
 +			t.Fatalf("%s reset_seq = %d, want 1", email, row.ResetSeq)
++		}
++	}
++}
++
++// ResetAllTraffics must advance the epoch of every known baseline row, even
++// rows whose VPN usage is already 0 -> 0: the canonical reset fact is written
++// by the reset path itself, never inferred from a counter drop.
++func TestResetAllTrafficsAdvancesTgWebEpoch(t *testing.T) {
++	setupConflictDB(t)
++	for _, email := range []string{"alice", "bob"} {
++		if err := database.GetDB().Create(&xray.ClientTraffic{Email: email, Enable: true}).Error; err != nil {
++			t.Fatalf("seed traffic: %v", err)
++		}
++		if err := database.GetDB().Create(&model.TgWebTrafficBaseline{Email: email, Domain: "web.maicraft.tech"}).Error; err != nil {
++			t.Fatalf("seed baseline: %v", err)
++		}
++	}
++
++	if _, err := (&ClientService{}).ResetAllTraffics(); err != nil {
++		t.Fatalf("ResetAllTraffics: %v", err)
++	}
++
++	for _, email := range []string{"alice", "bob"} {
++		var row model.TgWebTrafficBaseline
++		if err := database.GetDB().Where("email = ?", email).First(&row).Error; err != nil {
++			t.Fatalf("baseline row %s: %v", email, err)
++		}
++		if row.ResetSeq != 1 {
++			t.Fatalf("%s reset_seq = %d, want 1 (0 -> 0 VPN reset is still a real epoch)", email, row.ResetSeq)
++		}
++		var tr xray.ClientTraffic
++		if err := database.GetDB().Where("email = ?", email).First(&tr).Error; err != nil {
++			t.Fatalf("traffic row %s: %v", email, err)
++		}
++		if tr.Up != 0 || tr.Down != 0 {
++			t.Fatalf("%s VPN counters = %d/%d, want 0/0", email, tr.Up, tr.Down)
++		}
++	}
++}
++
++// A targeted bulk reset must bump exactly the named emails' epochs; every
++// other baseline row keeps its previous epoch.
++func TestBulkResetTrafficExactBatchLeavesOthers(t *testing.T) {
++	setupConflictDB(t)
++	for _, email := range []string{"alice", "bob"} {
++		if err := database.GetDB().Create(&xray.ClientTraffic{Email: email, Up: 10, Down: 10, Enable: true}).Error; err != nil {
++			t.Fatalf("seed traffic: %v", err)
++		}
++		if err := database.GetDB().Create(&model.TgWebTrafficBaseline{Email: email, Domain: "web.maicraft.tech"}).Error; err != nil {
++			t.Fatalf("seed baseline: %v", err)
++		}
++	}
++
++	if _, err := (&ClientService{}).BulkResetTraffic(&InboundService{}, []string{"bob"}); err != nil {
++		t.Fatalf("BulkResetTraffic: %v", err)
++	}
++
++	var alice, bob model.TgWebTrafficBaseline
++	if err := database.GetDB().Where("email = ?", "alice").First(&alice).Error; err != nil {
++		t.Fatalf("alice baseline: %v", err)
++	}
++	if err := database.GetDB().Where("email = ?", "bob").First(&bob).Error; err != nil {
++		t.Fatalf("bob baseline: %v", err)
++	}
++	if bob.ResetSeq != 1 {
++		t.Fatalf("bob reset_seq = %d, want 1", bob.ResetSeq)
++	}
++	if alice.ResetSeq != 0 {
++		t.Fatalf("alice reset_seq = %d, want 0 (untouched by bob's reset)", alice.ResetSeq)
++	}
++}
++
++// Each canonical reset starts a new epoch: repeated resets advance the
++// sequence monotonically instead of re-detecting the same drop.
++func TestRepeatedResetAdvancesEpochMonotonically(t *testing.T) {
++	setupConflictDB(t)
++	if err := database.GetDB().Create(&xray.ClientTraffic{Email: "bob", Up: 100, Down: 50, Enable: true}).Error; err != nil {
++		t.Fatalf("seed traffic: %v", err)
++	}
++	if err := database.GetDB().Create(&model.TgWebTrafficBaseline{Email: "bob", Domain: "web.maicraft.tech"}).Error; err != nil {
++		t.Fatalf("seed baseline: %v", err)
++	}
++
++	svc := &InboundService{}
++	for want := int64(1); want <= 2; want++ {
++		if err := svc.ResetClientTrafficByEmail("bob"); err != nil {
++			t.Fatalf("ResetClientTrafficByEmail pass %d: %v", want, err)
++		}
++		var row model.TgWebTrafficBaseline
++		if err := database.GetDB().Where("email = ?", "bob").First(&row).Error; err != nil {
++			t.Fatalf("baseline row: %v", err)
++		}
++		if row.ResetSeq != want {
++			t.Fatalf("pass %d: reset_seq = %d, want %d", want, row.ResetSeq, want)
 +		}
 +	}
 +}
