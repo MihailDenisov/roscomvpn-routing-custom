@@ -1,0 +1,818 @@
+From 0000000000000000000000000000000000000002 Mon Sep 17 00:00:00 2001
+From: 3x-ui TgWeb patchset
+Date: Tue, 6 Oct 2026 00:00:01 +0300
+Subject: [PATCH 2/3] tgweb: add resilient desired-state reconciler
+
+Baseline: MHSanaei/3x-ui@6be3c438e1420f24dd10060f8a1dd620b2d0e73b
+Requires: 0001-tgweb-protocol-isolation.patch
+
+The TgWeb runtime is deliberately eventually-consistent:
+- client/inbound CRUD only persists 3x-ui state;
+- TgWeb-only operations never call Xray and never request an Xray restart;
+- a periodic job reconciles attached clients through the loopback admin API;
+- runtime outage cannot roll back or block normal 3x-ui edits;
+- existing TgWeb secrets are preserved across detach/reattach;
+- detached/orphaned runtime credentials are retained disabled, never usable;
+- TgWeb counters are used for shared-quota decisions but are NOT written into
+  client_traffics in this patch, avoiding double accounting.
+
+diff --git a/internal/tgweb/client.go b/internal/tgweb/client.go
+new file mode 100644
+--- /dev/null
++++ b/internal/tgweb/client.go
+@@ -0,0 +1,183 @@
++package tgweb
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/url"
++	"os"
++	"strings"
++	"time"
++)
++
++const (
++	defaultAdminURL  = "http://127.0.0.1:9601"
++	defaultTokenFile = "/etc/tgwebproxy/admin.token"
++)
++
++type PolicyClient struct {
++	Name        string `json:"name"`
++	Secret      string `json:"secret"`
++	Enabled     bool   `json:"enabled"`
++	ExpiresUnix int64  `json:"expires_unix,omitempty"`
++	QuotaBytes  int64  `json:"quota_bytes,omitempty"`
++}
++
++type SnapshotClient struct {
++	PolicyClient
++	BytesUp   int64 `json:"bytes_up,omitempty"`
++	BytesDown int64 `json:"bytes_down,omitempty"`
++}
++
++type SnapshotDomain struct {
++	Domain  string           `json:"domain"`
++	Clients []SnapshotClient `json:"clients"`
++}
++
++type Client struct {
++	adminURL  string
++	tokenFile string
++	http      *http.Client
++}
++
++func NewClient(adminURL, tokenFile string, httpClient *http.Client) (*Client, error) {
++	if strings.TrimSpace(adminURL) == "" {
++		adminURL = defaultAdminURL
++	}
++	if strings.TrimSpace(tokenFile) == "" {
++		tokenFile = defaultTokenFile
++	}
++	u, err := url.Parse(adminURL)
++	if err != nil {
++		return nil, fmt.Errorf("tgweb admin URL: %w", err)
++	}
++	if u.Scheme != "http" {
++		return nil, errors.New("tgweb admin URL must use http on loopback")
++	}
++	host := u.Hostname()
++	if host != "localhost" {
++		ip := net.ParseIP(host)
++		if ip == nil || !ip.IsLoopback() {
++			return nil, errors.New("tgweb admin URL must be loopback")
++		}
++	}
++	if httpClient == nil {
++		httpClient = &http.Client{Timeout: 5 * time.Second}
++	}
++	return &Client{
++		adminURL:  strings.TrimRight(adminURL, "/"),
++		tokenFile: tokenFile,
++		http:      httpClient,
++	}, nil
++}
++
++func NewDefaultClient() (*Client, error) {
++	return NewClient(
++		os.Getenv("XUI_TGWEB_ADMIN"),
++		os.Getenv("XUI_TGWEB_TOKEN_FILE"),
++		nil,
++	)
++}
++
++func (c *Client) token() (string, error) {
++	b, err := os.ReadFile(c.tokenFile)
++	if err != nil {
++		return "", err
++	}
++	token := strings.TrimSpace(string(b))
++	if token == "" {
++		return "", errors.New("tgweb admin token file is empty")
++	}
++	return token, nil
++}
++
++func (c *Client) do(ctx context.Context, method string, body any) ([]byte, error) {
++	token, err := c.token()
++	if err != nil {
++		return nil, err
++	}
++	var r io.Reader
++	if body != nil {
++		payload, mErr := json.Marshal(body)
++		if mErr != nil {
++			return nil, mErr
++		}
++		r = bytes.NewReader(payload)
++	}
++	req, err := http.NewRequestWithContext(ctx, method, c.adminURL+"/clients", r)
++	if err != nil {
++		return nil, err
++	}
++	req.Header.Set("Authorization", "Bearer "+token)
++	if body != nil {
++		req.Header.Set("Content-Type", "application/json")
++	}
++	resp, err := c.http.Do(req)
++	if err != nil {
++		return nil, err
++	}
++	defer resp.Body.Close()
++	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
++	if err != nil {
++		return nil, err
++	}
++	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
++		return nil, fmt.Errorf("tgweb admin returned HTTP %d", resp.StatusCode)
++	}
++	return data, nil
++}
++
++func (c *Client) Get(ctx context.Context) ([]SnapshotDomain, error) {
++	b, err := c.do(ctx, http.MethodGet, nil)
++	if err != nil {
++		return nil, err
++	}
++	var out []SnapshotDomain
++	if err := json.Unmarshal(b, &out); err != nil {
++		return nil, fmt.Errorf("decode tgweb clients: %w", err)
++	}
++	return out, nil
++}
++
++func (c *Client) Put(ctx context.Context, domain string, clients []PolicyClient) error {
++	payload := struct {
++		Domain  string         `json:"domain"`
++		Clients []PolicyClient `json:"clients"`
++	}{
++		Domain:  domain,
++		Clients: clients,
++	}
++	_, err := c.do(ctx, http.MethodPut, payload)
++	return err
++}
++
+diff --git a/internal/tgweb/manager.go b/internal/tgweb/manager.go
+new file mode 100644
+--- /dev/null
++++ b/internal/tgweb/manager.go
+@@ -0,0 +1,213 @@
++package tgweb
++
++import (
++	"context"
++	"crypto/rand"
++	"encoding/hex"
++	"errors"
++	"sort"
++	"strings"
++	"sync"
++	"time"
++)
++
++type DesiredClient struct {
++	Name         string
++	Enabled      bool
++	ExpiryTimeMS int64
++	TotalBytes   int64
++	VPNUsedBytes int64
++}
++
++type DesiredDomain struct {
++	Domain  string
++	Clients []DesiredClient
++}
++
++type API interface {
++	Get(context.Context) ([]SnapshotDomain, error)
++	Put(context.Context, string, []PolicyClient) error
++}
++
++type Manager struct {
++	mu  sync.Mutex
++	api API
++}
++
++var (
++	managerMu sync.RWMutex
++	manager   *Manager
++)
++
++func GetManager() *Manager {
++	managerMu.RLock()
++	m := manager
++	managerMu.RUnlock()
++	if m != nil {
++		return m
++	}
++	managerMu.Lock()
++	defer managerMu.Unlock()
++	if manager != nil {
++		return manager
++	}
++	client, err := NewDefaultClient()
++	if err != nil {
++		manager = &Manager{api: &errorAPI{err: err}}
++	} else {
++		manager = &Manager{api: client}
++	}
++	return manager
++}
++
++func SetManagerForTest(m *Manager) {
++	managerMu.Lock()
++	manager = m
++	managerMu.Unlock()
++}
++
++func NewManager(api API) *Manager {
++	return &Manager{api: api}
++}
++
++type errorAPI struct{ err error }
++
++func (e *errorAPI) Get(context.Context) ([]SnapshotDomain, error) { return nil, e.err }
++func (e *errorAPI) Put(context.Context, string, []PolicyClient) error { return e.err }
++
++func randomSecret() (string, error) {
++	b := make([]byte, 16)
++	if _, err := rand.Read(b); err != nil {
++		return "", err
++	}
++	return hex.EncodeToString(b), nil
++}
++
++func policyEqual(a, b []PolicyClient) bool {
++	if len(a) != len(b) {
++		return false
++	}
++	ac := append([]PolicyClient(nil), a...)
++	bc := append([]PolicyClient(nil), b...)
++	sort.Slice(ac, func(i, j int) bool { return ac[i].Name < ac[j].Name })
++	sort.Slice(bc, func(i, j int) bool { return bc[i].Name < bc[j].Name })
++	for i := range ac {
++		if ac[i] != bc[i] {
++			return false
++		}
++	}
++	return true
++}
++
++func snapshotPolicy(in []SnapshotClient) []PolicyClient {
++	out := make([]PolicyClient, 0, len(in))
++	for _, c := range in {
++		out = append(out, c.PolicyClient)
++	}
++	return out
++}
++
++func (m *Manager) Reconcile(ctx context.Context, desired []DesiredDomain) error {
++	if m == nil || m.api == nil {
++		return errors.New("tgweb manager is not configured")
++	}
++	m.mu.Lock()
++	defer m.mu.Unlock()
++
++	current, err := m.api.Get(ctx)
++	if err != nil {
++		return err
++	}
++	byDomain := make(map[string]SnapshotDomain, len(current))
++	for _, d := range current {
++		byDomain[strings.ToLower(strings.TrimSpace(d.Domain))] = d
++	}
++
++	var errs []error
++	for _, want := range desired {
++		domain := strings.ToLower(strings.TrimSpace(want.Domain))
++		if domain == "" {
++			continue
++		}
++		have := byDomain[domain]
++		haveByName := make(map[string]SnapshotClient, len(have.Clients))
++		for _, c := range have.Clients {
++			haveByName[c.Name] = c
++		}
++
++		wantedNames := make(map[string]struct{}, len(want.Clients))
++		out := make([]PolicyClient, 0, len(have.Clients)+len(want.Clients))
++		now := time.Now().Unix()
++		for _, dc := range want.Clients {
++			name := strings.TrimSpace(dc.Name)
++			if name == "" {
++				continue
++			}
++			wantedNames[name] = struct{}{}
++			existing, ok := haveByName[name]
++			secret := existing.Secret
++			if secret == "" {
++				secret, err = randomSecret()
++				if err != nil {
++					errs = append(errs, err)
++					continue
++				}
++			}
++			exp := int64(0)
++			if dc.ExpiryTimeMS > 0 {
++				exp = dc.ExpiryTimeMS / 1000
++			}
++			enabled := dc.Enabled && (exp == 0 || exp > now)
++			quota := int64(0)
++			webUsed := existing.BytesUp + existing.BytesDown
++			if dc.TotalBytes > 0 {
++				quota = dc.TotalBytes - dc.VPNUsedBytes
++				if quota < 1 {
++					quota = 1
++				}
++				if dc.VPNUsedBytes+webUsed >= dc.TotalBytes {
++					enabled = false
++				}
++			}
++			out = append(out, PolicyClient{
++				Name:        name,
++				Secret:      secret,
++				Enabled:     enabled,
++				ExpiresUnix: exp,
++				QuotaBytes:  quota,
++			})
++		}
++
++		// Preserve credentials that are no longer attached, but make them unusable.
++		// This is what lets detach -> reattach keep the same secret.
++		for _, c := range have.Clients {
++			if _, ok := wantedNames[c.Name]; ok {
++				continue
++			}
++			p := c.PolicyClient
++			p.Enabled = false
++			out = append(out, p)
++		}
++
++		if policyEqual(snapshotPolicy(have.Clients), out) {
++			continue
++		}
++		if err := m.api.Put(ctx, domain, out); err != nil {
++			errs = append(errs, err)
++		}
++	}
++	return errors.Join(errs...)
++}
++
+diff --git a/internal/web/job/tgweb_job.go b/internal/web/job/tgweb_job.go
+new file mode 100644
+--- /dev/null
++++ b/internal/web/job/tgweb_job.go
+@@ -0,0 +1,149 @@
++package job
++
++import (
++	"context"
++	"encoding/json"
++	"strings"
++	"time"
++
++	"github.com/mhsanaei/3x-ui/v3/internal/database"
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++	"github.com/mhsanaei/3x-ui/v3/internal/logger"
++	"github.com/mhsanaei/3x-ui/v3/internal/tgweb"
++	"github.com/mhsanaei/3x-ui/v3/internal/xray"
++)
++
++type TgWebJob struct{}
++
++func NewTgWebJob() *TgWebJob { return &TgWebJob{} }
++
++type tgwebInboundSettings struct {
++	PublicHost string `json:"publicHost"`
++	PublicPort int    `json:"publicPort"`
++}
++
++func isAWGShadow(primary, email string) bool {
++	prefix := primary + "-awg"
++	if !strings.HasPrefix(email, prefix) {
++		return false
++	}
++	suffix := strings.TrimPrefix(email, prefix)
++	if suffix == "" {
++		return true
++	}
++	for _, r := range suffix {
++		if r < '0' || r > '9' {
++			return false
++		}
++	}
++	return true
++}
++
++func (j *TgWebJob) desired() ([]tgweb.DesiredDomain, error) {
++	db := database.GetDB()
++	var inbounds []model.Inbound
++	if err := db.Where("protocol = ? AND node_id IS NULL", model.TgWeb).
++		Order("id ASC").Find(&inbounds).Error; err != nil {
++		return nil, err
++	}
++	if len(inbounds) == 0 {
++		return nil, nil
++	}
++
++	var traffic []xray.ClientTraffic
++	if err := db.Find(&traffic).Error; err != nil {
++		return nil, err
++	}
++	usedByEmail := make(map[string]int64, len(traffic))
++	for _, t := range traffic {
++		usedByEmail[t.Email] += t.Up + t.Down
++	}
++
++	byDomain := map[string]*tgweb.DesiredDomain{}
++	for i := range inbounds {
++		ib := &inbounds[i]
++		var settings tgwebInboundSettings
++		if err := json.Unmarshal([]byte(ib.Settings), &settings); err != nil {
++			logger.Warning("tgweb: invalid inbound settings for", ib.Id, ":", err)
++			continue
++		}
++		domain := strings.ToLower(strings.TrimSpace(settings.PublicHost))
++		if domain == "" {
++			continue
++		}
++		d := byDomain[domain]
++		if d == nil {
++			d = &tgweb.DesiredDomain{Domain: domain}
++			byDomain[domain] = d
++		}
++		if !ib.Enable {
++			continue
++		}
++
++		var clients []model.ClientRecord
++		if err := db.Model(&model.ClientRecord{}).
++			Joins("JOIN client_inbounds ci ON ci.client_id = clients.id").
++			Where("ci.inbound_id = ?", ib.Id).
++			Order("clients.id ASC").
++			Find(&clients).Error; err != nil {
++			return nil, err
++		}
++		for _, c := range clients {
++			vpnUsed := usedByEmail[c.Email]
++			for email, used := range usedByEmail {
++				if isAWGShadow(c.Email, email) {
++					vpnUsed += used
++				}
++			}
++			d.Clients = append(d.Clients, tgweb.DesiredClient{
++				Name:         c.Email,
++				Enabled:      c.Enable,
++				ExpiryTimeMS: c.ExpiryTime,
++				TotalBytes:   c.TotalGB,
++				VPNUsedBytes: vpnUsed,
++			})
++		}
++	}
++
++	out := make([]tgweb.DesiredDomain, 0, len(byDomain))
++	for _, d := range byDomain {
++		out = append(out, *d)
++	}
++	return out, nil
++}
++
++func (j *TgWebJob) Run() {
++	desired, err := j.desired()
++	if err != nil {
++		logger.Warning("tgweb: build desired state failed:", err)
++		return
++	}
++	if len(desired) == 0 {
++		return
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
++	defer cancel()
++	if err := tgweb.GetManager().Reconcile(ctx, desired); err != nil {
++		// Runtime failure is deliberately non-fatal. Desired attachments remain in
++		// the DB and the next tick retries them.
++		logger.Debug("tgweb: reconcile deferred:", err)
++	}
++}
++
+diff --git a/internal/web/web.go b/internal/web/web.go
+--- a/internal/web/web.go
++++ b/internal/web/web.go
+@@ -277,6 +277,7 @@ const (
+ 	cadenceMtproto       = "@every 10s"
+ 	cadenceAmneziaWG     = "@every 10s"
+ 	cadenceTuic          = "@every 10s"
++	cadenceTgWeb         = "@every 10s"
+ 	cadenceClientIPScan  = "@every 10s"
+@@ -321,6 +322,10 @@ func (s *Server) startTask(restartXray bool, loc *time.Location) {
+ 	_, _ = s.cron.AddJob(cadenceTuic, tuicJob)
+ 	go tuicJob.Run()
+ 
++	tgwebJob := job.NewTgWebJob()
++	_, _ = s.cron.AddJob(cadenceTgWeb, tgwebJob)
++	go tgwebJob.Run()
++
+ 	// check client ips from log file every 10 sec
+ 	_, _ = s.cron.AddJob(cadenceClientIPScan, job.NewCheckClientIpJob())
+
+diff --git a/internal/web/runtime/local.go b/internal/web/runtime/local.go
+--- a/internal/web/runtime/local.go
++++ b/internal/web/runtime/local.go
+@@ -49,6 +49,10 @@ func (l *Local) withAPI(fn func(api *xray.XrayAPI) error) error {
+ }
+ 
+ func (l *Local) AddInbound(_ context.Context, ib *model.Inbound) error {
++	if ib.Protocol == model.TgWeb {
++		// Desired state is persisted by the service; TgWebJob reconciles runtime.
++		return nil
++	}
+ 	if ib.Protocol == model.MTProto {
+@@ -106,6 +110,9 @@ func (l *Local) AddInbound(_ context.Context, ib *model.Inbound) error {
+ }
+ 
+ func (l *Local) DelInbound(_ context.Context, ib *model.Inbound) error {
++	if ib.Protocol == model.TgWeb {
++		return nil
++	}
+ 	if ib.Protocol == model.MTProto {
+@@ -133,6 +140,19 @@ func (l *Local) DelInbound(_ context.Context, ib *model.Inbound) error {
+ }
+ 
+ func (l *Local) UpdateInbound(ctx context.Context, oldIb, newIb *model.Inbound) error {
++	if oldIb.Protocol == model.TgWeb || newIb.Protocol == model.TgWeb {
++		if oldIb.Protocol == model.TgWeb && newIb.Protocol == model.TgWeb {
++			return nil
++		}
++		if oldIb.Protocol == model.TgWeb {
++			if !newIb.Enable {
++				return nil
++			}
++			return l.AddInbound(ctx, newIb)
++		}
++		// Moving a real/Xray inbound to TgWeb must remove the old runtime first.
++		return l.DelInbound(ctx, oldIb)
++	}
+ 	if oldIb.Protocol == model.MTProto || newIb.Protocol == model.MTProto {
+@@ -273,7 +293,7 @@ func (l *Local) updateTuicInbound(ctx context.Context, oldIb, newIb *model.Inbound) error {
+ }
+ 
+ func (l *Local) AddUser(_ context.Context, ib *model.Inbound, userMap map[string]any) error {
+-	if ib.Protocol == model.MTProto || ib.Protocol == model.AmneziaWG || ib.Protocol == model.TUIC {
++	if ib.Protocol == model.MTProto || ib.Protocol == model.AmneziaWG || ib.Protocol == model.TUIC || ib.Protocol == model.TgWeb {
+ 		return nil
+ 	}
+@@ -282,7 +302,7 @@ func (l *Local) AddUser(_ context.Context, ib *model.Inbound, userMap map[string]any) error {
+ }
+ 
+ func (l *Local) RemoveUser(_ context.Context, ib *model.Inbound, email string) error {
+-	if ib.Protocol == model.MTProto || ib.Protocol == model.AmneziaWG || ib.Protocol == model.TUIC {
++	if ib.Protocol == model.MTProto || ib.Protocol == model.AmneziaWG || ib.Protocol == model.TUIC || ib.Protocol == model.TgWeb {
+ 		return nil
+ 	}
+
+diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service/client_inbound_apply.go
+--- a/internal/web/service/client_inbound_apply.go
++++ b/internal/web/service/client_inbound_apply.go
+@@ -466,6 +466,10 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model.Inbound) (bool, error) {
+ 			if client.AdTag != "" && !model.ValidMtprotoAdTag(client.AdTag) {
+ 				return false, common.NewError("mtproto client ad tag must be 32 hex characters")
+ 			}
++		case "tgweb":
++			if client.Email == "" {
++				return false, common.NewError("tgweb client requires an email")
++			}
+ 		case "tuic":
+@@ -584,7 +588,9 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model.Inbound) (bool, error) {
+ 	if oldInbound.NodeID == nil {
+ 		if !push {
+ 			needRestart = true
+-		} else if oldInbound.Protocol == model.MTProto {
++		} else if oldInbound.Protocol == model.TgWeb {
++			// Periodic TgWeb reconciliation applies the committed desired state.
++		} else if oldInbound.Protocol == model.MTProto {
+ 			inboundSvc.applyLocalMtproto(oldInbound.Id)
+@@ -696,6 +702,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
+ 		newClientId = clients[0].Email
+ 	case "mtproto":
+ 		newClientId = clients[0].Email
++	case "tgweb":
++		newClientId = clients[0].Email
+ 	default:
+ 		newClientId = clients[0].ID
+ 	}
+
+diff --git a/internal/web/service/inbound_tgweb_client_test.go b/internal/web/service/inbound_tgweb_client_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/web/service/inbound_tgweb_client_test.go
+@@ -0,0 +1,50 @@
++package service
++
++import (
++	"testing"
++
++	"github.com/mhsanaei/3x-ui/v3/internal/database"
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++)
++
++func TestAddTgWebClientNeedsNoXrayCredentialOrRestart(t *testing.T) {
++	setupConflictDB(t)
++	seedInboundConflict(
++		t,
++		"tgweb-clients",
++		"",
++		0,
++		model.TgWeb,
++		"",
++		`{"publicHost":"web.maicraft.tech","publicPort":443,"clients":[]}`,
++	)
++	ib := loadInboundByTag(t, "tgweb-clients")
++
++	svc := &ClientService{}
++	needRestart, err := svc.AddInboundClient(&InboundService{}, &model.Inbound{
++		Id: ib.Id,
++		Settings: clientsSettings(t, []model.Client{{
++			Email:  "mv",
++			SubID:  "mv-tgweb-sub",
++			Enable: true,
++		}}),
++	})
++	if err != nil {
++		t.Fatalf("AddInboundClient: %v", err)
++	}
++	if needRestart {
++		t.Fatal("TgWeb attach must not request an Xray restart")
++	}
++
++	var rec model.ClientRecord
++	if err := database.GetDB().Where("email = ?", "mv").First(&rec).Error; err != nil {
++		t.Fatalf("client record: %v", err)
++	}
++	if rec.UUID != "" || rec.Password != "" || rec.Auth != "" || rec.Secret != "" {
++		t.Fatalf("TgWeb minted an Xray/runtime credential in clients table: %+v", rec)
++	}
++	var n int64
++	if err := database.GetDB().Model(&model.ClientInbound{}).
++		Where("client_id = ? AND inbound_id = ?", rec.Id, ib.Id).Count(&n).Error; err != nil {
++		t.Fatalf("client_inbounds: %v", err)
++	}
++	if n != 1 {
++		t.Fatalf("client_inbounds count = %d, want 1", n)
++	}
++}
++
+diff --git a/internal/tgweb/manager_test.go b/internal/tgweb/manager_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/tgweb/manager_test.go
+@@ -0,0 +1,123 @@
++package tgweb
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++)
++
++type fakeAPI struct {
++	snapshot []SnapshotDomain
++	puts     map[string][]PolicyClient
++	getErr   error
++}
++
++func (f *fakeAPI) Get(context.Context) ([]SnapshotDomain, error) {
++	if f.getErr != nil {
++		return nil, f.getErr
++	}
++	return f.snapshot, nil
++}
++
++func (f *fakeAPI) Put(_ context.Context, domain string, clients []PolicyClient) error {
++	if f.puts == nil {
++		f.puts = map[string][]PolicyClient{}
++	}
++	f.puts[domain] = append([]PolicyClient(nil), clients...)
++	return nil
++}
++
++func byName(clients []PolicyClient, name string) (PolicyClient, bool) {
++	for _, c := range clients {
++		if c.Name == name {
++			return c, true
++		}
++	}
++	return PolicyClient{}, false
++}
++
++func TestReconcilePreservesSecretAndDisablesDetached(t *testing.T) {
++	api := &fakeAPI{snapshot: []SnapshotDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []SnapshotClient{
++			{PolicyClient: PolicyClient{Name: "mv", Secret: "00112233445566778899aabbccddeeff", Enabled: true}, BytesUp: 3, BytesDown: 4},
++			{PolicyClient: PolicyClient{Name: "old", Secret: "ffeeddccbbaa99887766554433221100", Enabled: true}},
++		},
++	}}}
++	m := NewManager(api)
++	err := m.Reconcile(context.Background(), []DesiredDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []DesiredClient{{
++			Name: "mv", Enabled: true, TotalBytes: 1000, VPNUsedBytes: 100,
++		}},
++	}})
++	if err != nil {
++		t.Fatalf("Reconcile: %v", err)
++	}
++	put := api.puts["web.maicraft.tech"]
++	mv, ok := byName(put, "mv")
++	if !ok {
++		t.Fatal("mv missing from PUT")
++	}
++	if mv.Secret != "00112233445566778899aabbccddeeff" {
++		t.Fatalf("secret rotated: %q", mv.Secret)
++	}
++	if !mv.Enabled || mv.QuotaBytes != 900 {
++		t.Fatalf("mv policy = %+v", mv)
++	}
++	old, ok := byName(put, "old")
++	if !ok || old.Enabled {
++		t.Fatalf("detached credential must be retained disabled: %+v", old)
++	}
++}
++
++func TestReconcileSharedQuotaIncludesCurrentWebUsage(t *testing.T) {
++	api := &fakeAPI{snapshot: []SnapshotDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []SnapshotClient{{
++			PolicyClient: PolicyClient{Name: "mv", Secret: "00112233445566778899aabbccddeeff", Enabled: true},
++			BytesUp: 30, BytesDown: 20,
++		}},
++	}}}
++	m := NewManager(api)
++	err := m.Reconcile(context.Background(), []DesiredDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []DesiredClient{{
++			Name: "mv", Enabled: true, TotalBytes: 100, VPNUsedBytes: 50,
++		}},
++	}})
++	if err != nil {
++		t.Fatalf("Reconcile: %v", err)
++	}
++	mv, _ := byName(api.puts["web.maicraft.tech"], "mv")
++	if mv.Enabled {
++		t.Fatal("client stayed enabled after VPN+WEB exhausted shared quota")
++	}
++}
++
++func TestReconcileHonorsExpiry(t *testing.T) {
++	api := &fakeAPI{}
++	m := NewManager(api)
++	err := m.Reconcile(context.Background(), []DesiredDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []DesiredClient{{
++			Name: "mv", Enabled: true, ExpiryTimeMS: time.Now().Add(-time.Minute).UnixMilli(),
++		}},
++	}})
++	if err != nil {
++		t.Fatalf("Reconcile: %v", err)
++	}
++	mv, _ := byName(api.puts["web.maicraft.tech"], "mv")
++	if mv.Enabled {
++		t.Fatal("expired client stayed enabled")
++	}
++}
++
++func TestReconcileRuntimeFailureIsReturnedForRetry(t *testing.T) {
++	want := errors.New("runtime down")
++	m := NewManager(&fakeAPI{getErr: want})
++	if err := m.Reconcile(context.Background(), []DesiredDomain{{Domain: "web.maicraft.tech"}}); !errors.Is(err, want) {
++		t.Fatalf("Reconcile error = %v, want %v", err, want)
++	}
++}
