@@ -616,6 +616,38 @@ diff --git a/internal/web/runtime/local.go b/internal/web/runtime/local.go
  		return nil
  	}
 
+diff --git a/internal/web/service/client_crud.go b/internal/web/service/client_crud.go
+--- a/internal/web/service/client_crud.go
++++ b/internal/web/service/client_crud.go
+@@ -191,4 +191,27 @@ func (s *ClientService) Create(inboundSvc *InboundService, payload *ClientCreatePayload) (bool, error) {
+ 	emailTaken := !errors.Is(err, gorm.ErrRecordNotFound)
++	if !emailTaken {
++		var nonTgWeb int64
++		if err := database.GetDB().Model(&model.Inbound{}).
++			Where("id IN ? AND protocol <> ?", payload.InboundIds, model.TgWeb).
++			Count(&nonTgWeb).Error; err != nil {
++			return false, err
++		}
++		if nonTgWeb == 0 {
++			// The generic clients form pre-generates credentials for Xray/tunnel
++			// protocols. A TgWeb-only identity must not persist credentials that
++			// belong to runtimes it never uses; tgwebproxy-multi owns its secret.
++			client.ID = ""
++			client.Password = ""
++			client.Auth = ""
++			client.Secret = ""
++			client.Flow = ""
++			client.PrivateKey = ""
++			client.PublicKey = ""
++			client.PreSharedKey = ""
++			client.AllowedIPs = nil
++			client.AllowedIPsByInbound = nil
++		}
++	}
+ 	if emailTaken {
+ 		if existing.SubID == "" || existing.SubID != client.SubID {
+ 			return false, common.NewError("email already in use:", client.Email)
+
 diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service/client_inbound_apply.go
 --- a/internal/web/service/client_inbound_apply.go
 +++ b/internal/web/service/client_inbound_apply.go
@@ -684,7 +716,7 @@ diff --git a/internal/web/service/inbound_tgweb_client_test.go b/internal/web/se
 new file mode 100644
 --- /dev/null
 +++ b/internal/web/service/inbound_tgweb_client_test.go
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,87 @@
 +package service
 +
 +import (
@@ -739,6 +771,40 @@ new file mode 100644
 +		t.Fatalf("client_inbounds count = %d, want 1", n)
 +	}
 +}
++func TestCreateTgWebOnlyClientDropsGenericCredentials(t *testing.T) {
++	setupConflictDB(t)
++	seedInboundConflict(
++		t,
++		"tgweb-create",
++		"",
++		0,
++		model.TgWeb,
++		"",
++		`{"publicHost":"web.maicraft.tech","publicPort":443,"clients":[]}`,
++	)
++	ib := loadInboundByTag(t, "tgweb-create")
++
++	svc := &ClientService{}
++	_, err := svc.Create(&InboundService{}, &ClientCreatePayload{
++		Client: model.Client{
++			Email: "tgweb-only", SubID: "tgweb-only-sub", Enable: true,
++			ID: "frontend-generated-uuid", Password: "frontend-password",
++			Auth: "frontend-auth", Secret: "frontend-secret",
++		},
++		InboundIds: []int{ib.Id},
++	})
++	if err != nil {
++		t.Fatalf("Create: %v", err)
++	}
++	var rec model.ClientRecord
++	if err := database.GetDB().Where("email = ?", "tgweb-only").First(&rec).Error; err != nil {
++		t.Fatalf("client record: %v", err)
++	}
++	if rec.UUID != "" || rec.Password != "" || rec.Auth != "" || rec.Secret != "" {
++		t.Fatalf("TgWeb-only create persisted generic credentials: %+v", rec)
++	}
++}
+
 diff --git a/internal/tgweb/manager_test.go b/internal/tgweb/manager_test.go
 new file mode 100644
 --- /dev/null
