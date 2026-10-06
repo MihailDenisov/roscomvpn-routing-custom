@@ -64,6 +64,37 @@ rw(F,
 
                       <Form.Item>
                         <Switch''')
+C="frontend/src/pages/clients/RowCells.tsx"
+rw(C,
+'''interface ClientInboundChipsProps {
+  ids: number[];
+  inboundsById: Record<number, InboundOption>;''',
+'''interface ClientInboundChipsProps {
+  ids: number[];
+  externalKeys?: string[];
+  inboundsById: Record<number, InboundOption>;''')
+rw(C,
+'''export const ClientInboundChips = memo(function ClientInboundChips({
+  ids,
+  inboundsById,''',
+'''export const ClientInboundChips = memo(function ClientInboundChips({
+  ids,
+  externalKeys = [],
+  inboundsById,''')
+rw(C,
+'''  if (ids.length === 0) return <span className="cell-empty">—</span>;''',
+'''  if (ids.length === 0 && externalKeys.length === 0) return <span className="cell-empty">—</span>;''')
+rw(C,
+'''      {visible.map(chip)}
+      {overflow.length > 0 && (''',
+'''      {visible.map(chip)}
+      {externalKeys.includes('tgweb') && (
+        <Tooltip title="External Telegram WebProxy. Does not create an Xray inbound.">
+          <Tag style={CHIP_STYLE}>Telegram WebProxy · External</Tag>
+        </Tooltip>
+      )}
+      {overflow.length > 0 && (''')
+
 P="frontend/src/pages/clients/ClientsPage.tsx"
 rw(P,"  const [editingAttachedIds, setEditingAttachedIds] = useState<number[]>([]);\n  const [editingExternalLinks, setEditingExternalLinks] = useState<ExternalLink[]>([]);",
      "  const [editingAttachedIds, setEditingAttachedIds] = useState<number[]>([]);\n  const [editingExternalInboundKeys, setEditingExternalInboundKeys] = useState<string[]>([]);\n  const [editingExternalLinks, setEditingExternalLinks] = useState<ExternalLink[]>([]);")
@@ -88,6 +119,12 @@ rw(P,
         const r = await detach(emailKey, meta.detach, meta.detachExternal);
         if (!r?.success) return r;
       }''')
+rw(P,
+'''              ids={record.inboundIds || EMPTY_INBOUND_IDS}
+              inboundsById={inboundsById}''',
+'''              ids={record.inboundIds || EMPTY_INBOUND_IDS}
+              externalKeys={record.externalInboundKeys || []}
+              inboundsById={inboundsById}''')
 rw(P,"            attachedIds={editingAttachedIds}",
      "            attachedIds={editingAttachedIds}\n            attachedExternalInboundKeys={editingExternalInboundKeys}")
 print("frontend form patch applied")
