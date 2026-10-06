@@ -326,6 +326,23 @@ cmd_toggle() { # имя true|false
   if [[ $2 == true ]]; then say "Пользователь $1 включён."; else say "Пользователь $1 выключен — подписка и подключения не работают."; fi
 }
 
+cmd_sync() {
+  local target=${1:-}
+  if [[ $target == --all ]]; then
+    local name
+    while IFS= read -r name; do
+      [[ -n $name ]] || continue
+      tgweb_sync_user "$name"
+    done < <(clients | jq -r '.[] | select((.comment // "") == "kit") | .email | select(test("-awg[0-9]*$") | not)')
+    say "TgWebProxy синхронизирован со всеми KIT-пользователями."
+    return
+  fi
+  valid_name "$target"
+  [[ -n $(client "$target") ]] || die "Нет пользователя $target"
+  tgweb_sync_user "$target"
+  say "TgWebProxy синхронизирован для $target."
+}
+
 cmd_del() {
   local name=${1:-} ans=""
   valid_name "$name"
@@ -385,6 +402,7 @@ ${B}kit${N} — управление 3X-UI KIT
   kit user limit имя [--gb N] [--days N] [--devices N]    изменить лимиты (0 — без ограничений)
   kit user repair имя                                      восстановить REALITY flow у старого пользователя
   kit user off имя  /  kit user on имя                    выключить и включить
+  kit user sync имя|--all                                 синхронизировать TgWebProxy
   kit user del имя                                        удалить
 EOF
 }
@@ -398,6 +416,7 @@ case "${1:-} ${2:-}" in
   "user repair") shift 2; cmd_repair "$@" ;;
   "user off") cmd_toggle "${3:-}" false ;;
   "user on") cmd_toggle "${3:-}" true ;;
+  "user sync") shift 2; cmd_sync "$@" ;;
   "user del") shift 2; cmd_del "$@" ;;
   *) usage ;;
 esac
