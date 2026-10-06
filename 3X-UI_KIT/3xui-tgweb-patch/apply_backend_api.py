@@ -128,8 +128,7 @@ rw("internal/web/controller/client.go",
 	}
 	if needRestart {''')
 rw("internal/web/controller/client.go",
-'''	needRestart, err := a.clientService.DetachByEmailMany(&a.inboundService, email, body.InboundIds)
-	if needRestart {''',
+'''	needRestart, err := a.clientService.DetachByEmailMany(&a.inboundService, email, body.InboundIds)''',
 '''	needRestart := false
 	var err error
 	if len(body.InboundIds) > 0 {
@@ -137,6 +136,5 @@ rw("internal/web/controller/client.go",
 	}
 	if err == nil {
 		err = a.clientService.DetachExternalByEmail(email, body.ExternalInboundKeys)
-	}
-	if needRestart {''')
+	}''')
 print("backend API patch applied")
