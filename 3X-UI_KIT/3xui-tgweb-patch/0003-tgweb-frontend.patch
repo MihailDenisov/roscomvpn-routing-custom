@@ -13,13 +13,13 @@ is owned by nginx SNI routing + tgwebproxy-multi.
 diff --git a/frontend/src/schemas/primitives/protocol.ts b/frontend/src/schemas/primitives/protocol.ts
 --- a/frontend/src/schemas/primitives/protocol.ts
 +++ b/frontend/src/schemas/primitives/protocol.ts
-@@ -12,4 +12,5 @@ export const ProtocolSchema = z.enum([
+@@ -14,4 +14,5 @@ export const ProtocolSchema = z.enum([
    'mtproto',
    'amneziawg',
    'tuic',
 +  'tgweb',
  ]);
-@@ -35,4 +36,5 @@ export const Protocols = Object.freeze({
+@@ -37,4 +38,5 @@ export const Protocols = Object.freeze({
    MTPROTO: 'mtproto',
    AMNEZIAWG: 'amneziawg',
    TUIC: 'tuic',
@@ -43,7 +43,7 @@ diff --git a/frontend/src/schemas/protocols/inbound/tgweb.ts b/frontend/src/sche
 new file mode 100644
 --- /dev/null
 +++ b/frontend/src/schemas/protocols/inbound/tgweb.ts
-@@ -0,0 +1,23 @@
+@@ -0,0 +0,23 @@
 +import { z } from 'zod';
 +
 +export const TgwebClientSchema = z
@@ -70,16 +70,16 @@ new file mode 100644
 diff --git a/frontend/src/schemas/protocols/inbound/index.ts b/frontend/src/schemas/protocols/inbound/index.ts
 --- a/frontend/src/schemas/protocols/inbound/index.ts
 +++ b/frontend/src/schemas/protocols/inbound/index.ts
-@@ -8,3 +8,4 @@ import { ShadowsocksInboundSettingsSchema } from './shadowsocks';
+@@ -9,3 +9,4 @@ import { ShadowsocksInboundSettingsSchema } from './shadowsocks';
  import { TrojanInboundSettingsSchema } from './trojan';
  import { TuicInboundSettingsSchema } from './tuic';
 +import { TgwebInboundSettingsSchema } from './tgweb';
  import { TunInboundSettingsSchema } from './tun';
-@@ -21,2 +22,3 @@ export * from './trojan';
+@@ -24,2 +25,3 @@ export * from './trojan';
  export * from './tuic';
 +export * from './tgweb';
  export * from './tun';
-@@ -42,3 +44,4 @@ export const InboundSettingsSchema = z.discriminatedUnion('protocol', [
+@@ -48,3 +50,4 @@ export const InboundSettingsSchema = z.discriminatedUnion('protocol', [
    z.object({ protocol: z.literal('amneziawg'), settings: AmneziawgInboundSettingsSchema }),
    z.object({ protocol: z.literal('tuic'), settings: TuicInboundSettingsSchema }),
 +  z.object({ protocol: z.literal('tgweb'), settings: TgwebInboundSettingsSchema }),
@@ -88,10 +88,10 @@ diff --git a/frontend/src/schemas/protocols/inbound/index.ts b/frontend/src/sche
 diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/inbound-defaults.ts
 --- a/frontend/src/lib/xray/inbound-defaults.ts
 +++ b/frontend/src/lib/xray/inbound-defaults.ts
-@@ -13,1 +13,2 @@ import type { TrojanClient, TrojanInboundSettings } from '@/schemas/protocols/inbound/trojan';
+@@ -14,1 +14,2 @@ import type { TrojanClient, TrojanInboundSettings } from '@/schemas/protocols/inbound/trojan';
  import type { TuicClient, TuicInboundSettings } from '@/schemas/protocols/inbound/tuic';
 +import type { TgwebInboundSettings } from '@/schemas/protocols/inbound/tgweb';
-@@ -260,3 +261,11 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
+@@ -65,3 +66,11 @@ export function createDefaultTuicInboundSettings(): TuicInboundSettings {
    };
  }
  
@@ -103,13 +103,13 @@ diff --git a/frontend/src/lib/xray/inbound-defaults.ts b/frontend/src/lib/xray/i
 +  };
 +}
 +
-@@ -283,3 +291,4 @@ export type AnyInboundSettings =
+@@ -376,3 +385,4 @@ export type AnyInboundSettings =
    | MtprotoInboundSettings
    | AmneziawgInboundSettings
 -  | TuicInboundSettings;
 +  | TuicInboundSettings
 +  | TgwebInboundSettings;
-@@ -311,4 +320,6 @@ export function createDefaultInboundSettings(protocol: string): AnyInboundSettings | null {
+@@ -406,4 +416,6 @@ export function createDefaultInboundSettings(protocol: string): AnyInboundSettings | null {
      case 'tuic':
        return createDefaultTuicInboundSettings();
 +    case 'tgweb':
@@ -122,7 +122,7 @@ diff --git a/frontend/src/pages/inbounds/form/protocols/tgweb.tsx b/frontend/src
 new file mode 100644
 --- /dev/null
 +++ b/frontend/src/pages/inbounds/form/protocols/tgweb.tsx
-@@ -0,0 +1,31 @@
+@@ -0,0 +0,31 @@
 +import { Alert, Input, InputNumber } from 'antd';
 +
 +import { FormField } from '@/components/form/rhf';
@@ -217,7 +217,7 @@ diff --git a/frontend/src/pages/inbounds/form/InboundFormModal.tsx b/frontend/sr
  
 -      {protocol !== Protocols.MTPROTO && (
 +      {protocol !== Protocols.MTPROTO && protocol !== Protocols.TGWEB && (
-@@ -727,7 +737,9 @@ export default function InboundFormModal({
+@@ -730,7 +740,9 @@ export default function InboundFormModal({
 -      <FormField
 -        name="port"
 -        label={t('pages.inbounds.port')}
@@ -261,7 +261,7 @@ diff --git a/frontend/src/test/tgweb-inbound-form.test.ts b/frontend/src/test/tg
 new file mode 100644
 --- /dev/null
 +++ b/frontend/src/test/tgweb-inbound-form.test.ts
-@@ -0,0 +1,38 @@
+@@ -0,0 +0,38 @@
 +import { describe, expect, it } from 'vitest';
 +
 +import { createDefaultInboundSettings } from '@/lib/xray/inbound-defaults';
