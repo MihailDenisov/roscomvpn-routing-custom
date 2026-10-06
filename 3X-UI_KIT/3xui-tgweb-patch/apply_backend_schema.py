@@ -19,6 +19,18 @@ func (ClientExternalInbound) TableName() string { return "client_external_inboun
 ''')
 for path in ("internal/database/db.go","internal/database/migrate_data.go"):
  rw(path,"\t\t&model.ClientInbound{},\n","\t\t&model.ClientInbound{},\n\t\t&model.ClientExternalInbound{},\n")
+rw("internal/web/service/client_crud.go",
+'''		if err := tx.Where("client_id = ?", id).Delete(&model.ClientInbound{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("client_id = ?", id).Delete(&model.ClientExternalLink{}).Error; err != nil {''',
+'''		if err := tx.Where("client_id = ?", id).Delete(&model.ClientInbound{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("client_id = ?", id).Delete(&model.ClientExternalInbound{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("client_id = ?", id).Delete(&model.ClientExternalLink{}).Error; err != nil {''')
 svc=r'''package service
 
 import (
