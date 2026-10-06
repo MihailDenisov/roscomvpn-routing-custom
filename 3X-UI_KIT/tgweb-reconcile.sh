@@ -113,4 +113,18 @@ while IFS= read -r name; do
   fi
 done < <(jq -r '.[] | select(.subId != null) | .email | select(test("-awg[0-9]*$") | not)' <<<"$xc" | sort -u)
 
+# A TgWeb credential whose primary 3x-ui identity was deleted must not remain
+# usable. Disable (never delete/rotate) such runtime entries so a transient
+# TgWeb outage or later recovery cannot resurrect an orphaned secret.  This is
+# intentionally conservative: migration should map every legitimate existing
+# TgWeb client to a 3x-ui identity before the patched panel is deployed.
+while IFS= read -r orphan; do
+  [[ -n $orphan && $orphan != "_bootstrap" ]] || continue
+  if ! jq -e --arg n "$orphan" '.[] | select(.subId != null and .email == $n)' <<<"$xc" >/dev/null; then
+    wc_new=$(jq -c --arg n "$orphan" '
+      map(if .name == $n then .enabled=false else . end)' <<<"$wc")
+    if [[ $wc_new != "$wc" ]]; then wc=$wc_new; changed=yes; fi
+  fi
+done < <(jq -r '.[].name // empty' <<<"$wc")
+
 [[ $changed == yes ]] && wput_clients "$wc"
