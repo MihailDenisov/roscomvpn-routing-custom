@@ -1,215 +1,358 @@
 # 3x-ui ↔ TgWebProxy integration architecture
 
-Upstream baseline: `MHSanaei/3x-ui@d57dcf824b6211201252da137b79029747f142f3`.
+Upstream baseline: `MHSanaei/3x-ui@6be3c438e1420f24dd10060f8a1dd620b2d0e73b`.
 
 ## Decision
 
-TgWeb is an **external/virtual client attachment**, not an Xray inbound.
+TgWeb follows the existing **MTProto-style non-Xray inbound** pattern.
 
-Do **not** create a row in `inbounds`, do not use a fake protocol, and do not encode TgWeb as a negative integer in `inboundIds`.
+It is a real 3x-ui `Inbound` row and uses the normal `client_inbounds` attachment table, but its runtime is external and it never becomes an Xray listener/config object.
 
-Persist desired state in a new join table:
+Stable protocol key:
 
 ```text
-client_external_inbounds
-  client_id   INTEGER NOT NULL
-  provider    TEXT    NOT NULL
-  created_at  BIGINT
-  PRIMARY KEY (client_id, provider)
+tgweb
 ```
 
-Initial provider set contains one stable key: `tgweb`.
+Network publishing stays outside 3x-ui:
 
-The normal API/UI keeps real Xray inbound IDs in `inboundIds: number[]` and adds:
+```text
+Internet :443
+    |
+nginx stream / ssl_preread
+    |
+SNI web.maicraft.tech
+    |
+127.0.0.1:4600
+    |
+tgwebproxy-multi
+```
 
-```json
-{
-  "externalInboundKeys": ["tgweb"]
+The private management API remains:
+
+```text
+127.0.0.1:9601
+```
+
+3x-ui manages desired clients through that loopback API; nginx/SNI routing is static and does not change per user.
+
+## Why this is preferred
+
+Current upstream already treats MTProto, AmneziaWG and TUIC as protocols that are represented as normal inbounds in the panel while being served outside Xray.
+
+TgWeb can therefore reuse the familiar client assignment model:
+
+```text
+clients
+inbounds
+client_inbounds
+```
+
+Example:
+
+```text
+MV
+ ├─ Reality inbound
+ ├─ XHTTP inbound
+ ├─ MTProto inbound
+ └─ Telegram WebProxy inbound (protocol=tgweb)
+```
+
+No negative IDs, no virtual IDs and no second attachment table are needed.
+
+## Port/listener model
+
+TgWeb does **not** own public port 443. nginx owns the public listener and routes by SNI.
+
+The TgWeb inbound is portless from 3x-ui's runtime perspective:
+
+```text
+Protocol = tgweb
+Port     = 0
+Listen   = ""
+```
+
+Upstream currently validates inbound ports as `gte=0,lte=65535`, so `0` is representable without a fake port.
+
+The public endpoint used for share links is configured separately:
+
+```text
+publicHost = web.maicraft.tech
+publicPort = 443
+```
+
+The backend and management endpoints remain server-side implementation details:
+
+```text
+backend = 127.0.0.1:4600
+admin   = 127.0.0.1:9601
+```
+
+No backend/admin address or admin token is exposed to the browser.
+
+## Xray isolation
+
+This is the critical invariant.
+
+Upstream already excludes non-Xray protocols from Xray config generation. TgWeb must be added to every equivalent exclusion/capability gate.
+
+Conceptually:
+
+```go
+if inbound.Protocol == model.MTProto ||
+   inbound.Protocol == model.AmneziaWG ||
+   inbound.Protocol == model.TUIC ||
+   inbound.Protocol == model.TgWeb {
+    continue
 }
 ```
 
-This preserves old API clients and creates a type-level barrier between Xray IDs and external providers.
+Mandatory regression test:
 
-## Why this is the safest option
+1. create a `tgweb` inbound;
+2. attach a client;
+3. generate Xray config;
+4. assert that no `tgweb`, `web.maicraft.tech`, TgWeb secret, listener, tag or fake protocol appears in the Xray JSON.
 
-The upstream Xray path reads `inbounds` and `client_inbounds`. The new table is never joined by Xray config generation. Therefore no TgWeb value can become:
+Attaching/detaching TgWeb alone must not request an Xray restart.
 
-- an Xray listener;
-- an Xray protocol;
-- an Xray tag;
-- an `inbound.settings.clients[]` entry;
-- a reason to restart/reload Xray.
+## Database
 
-Only the existing real `inboundIds` are passed to `ClientService.Attach/Detach/Create` and `InboundService`.
+No new attachment table.
 
-## Database changes
+Add only the new protocol constant/validation value:
 
-### New model
+```go
+TgWeb Protocol = "tgweb"
+```
 
-Add `model.ClientExternalInbound` in `internal/database/model/model.go`:
+The existing tables remain authoritative:
 
-- `ClientId int` — composite primary key, indexed;
-- `Provider string` — composite primary key;
-- `CreatedAt int64`.
+```text
+inbounds
+clients
+client_inbounds
+```
 
-Table name: `client_external_inbounds`.
+The TgWeb secret is not stored in 3x-ui's generic Xray client fields unless a later implementation proves that safe and upstream-friendly. Phase 1 keeps the runtime secret owned by tgwebproxy-multi and reconciles it through the private management API.
 
-No TgWeb secret is stored in 3x-ui DB. The secret stays owned by TgWebProxy and its private state file.
+## TgWeb inbound settings
 
-### Migration
-
-Add the model to the normal AutoMigrate model list and to `migrationModels` in `internal/database/migrate_data.go` so SQLite↔PostgreSQL migration includes it.
-
-Migration/bootstrap of desired state must be idempotent:
-
-1. Existing row => keep it.
-2. Client comment contains `[tgweb:off]` => do not attach `tgweb`; remove only this marker after migration succeeds, preserving the rest of the comment.
-3. No marker and a TgWeb client with the same canonical client name exists => attach `tgweb`.
-4. No marker and no TgWeb client exists => leave detached. This is the safe default: migration must not silently create WebProxy credentials for every VPN user.
-
-Existing TgWeb secrets and counters are never rewritten by the migration.
-
-## Backend API
-
-Existing routes stay:
-
-- `POST /panel/api/clients/{email}/attach`
-- `POST /panel/api/clients/{email}/detach`
-
-Request body is extended compatibly:
+The inbound settings should contain only non-secret operational metadata required by the panel, for example:
 
 ```json
 {
-  "inboundIds": [7, 9],
-  "externalInboundKeys": ["tgweb"]
+  "publicHost": "web.maicraft.tech",
+  "publicPort": 443
 }
 ```
 
-Old requests containing only `inboundIds` keep current behavior.
+Local admin URL/token are read from server-side configuration, not persisted in browser-visible inbound JSON.
 
-Client hydrate/list payloads gain:
+If desired, a later revision may support multiple TgWeb runtimes/providers, but phase 1 targets one local `tgwebproxy-multi` instance.
 
-```json
-{
-  "externalInboundKeys": ["tgweb"],
-  "externalInboundStates": {
-    "tgweb": {
-      "desiredAttached": true,
-      "runtime": "active|disabled|pending|error|unknown"
-    }
-  }
-}
+## Runtime integration
+
+Add an isolated package, proposed:
+
+```text
+internal/tgweb/
+  client.go
+  manager.go
+  model.go
 ```
 
-Runtime state is display-only; the attachment table is the source of truth.
+and a periodic web job:
 
-Bulk attach/detach: phase 1 leaves external providers unsupported in bulk actions. The UI must not offer TgWeb in those bulk modals. This avoids widening the initial patch surface.
+```text
+internal/web/job/tgweb_job.go
+```
 
-## TgWeb integration service
+Unlike MTProto, TgWeb Manager does not spawn a listener process. It reconciles the already-running `tgwebproxy-multi` through the loopback management API.
 
-Add an isolated package/service (proposed path `internal/web/service/tgweb`) with:
+Desired state comes from:
 
-- provider key constant `tgweb`;
-- private admin API client;
-- reconciliation entry point;
-- migration probe;
-- runtime-state cache/status.
+- enabled local `tgweb` inbound;
+- clients attached through `client_inbounds`;
+- client enable flag;
+- expiry;
+- shared quota state.
 
-Configuration is read server-side only (environment/file wiring in the custom patch), including:
-
-- public host used to build the share link;
-- admin URL fixed to loopback/private socket;
-- admin token file.
-
-The token is never serialized to API responses or frontend data and is never logged.
-
-Desired state lives in 3x-ui. A failed TgWeb call must not roll back an otherwise valid Xray client edit. Reconciliation retries later.
+Runtime state is eventually reconciled. TgWeb/API failure must not make normal VPN edits fail.
 
 ## Effective enable policy
 
-For an attached TgWeb provider:
+For a client attached to the enabled TgWeb inbound:
 
 ```text
 effective_enabled =
     client.enable
+    AND tgweb_inbound.enable
     AND not_expired
     AND quota_not_exhausted
 ```
 
-Detached clients are disabled/absent regardless of `client.enable`.
+If the client is detached, it is disabled/removed from TgWeb desired state.
 
-Quota sent to TgWeb is the remaining shared allowance after already-accounted VPN/AWG usage. TgWeb usage is then included once in aggregate usage. AWG shadow identities such as `NAME-awg` / `NAME-awg2` never receive their own external attachment.
+Re-attachment reuses the existing TgWeb secret when the runtime still has it; a new secret is created only when no credential exists.
 
-## Delete semantics
+## Shared quota and AWG shadows
 
-Client deletion first records/removes desired TgWeb attachment and schedules a reconcile that disables/removes the TgWeb credential, then performs existing VPN deletion. TgWeb unavailability must not leave VPN deletion blocked; the reconciler handles the outstanding external cleanup.
+Shared quota remains calculated across the canonical client identity.
 
-## Subscription behavior
+AWG shadow names such as:
 
-The admin/client share-link endpoint may return a TgWeb link only when `tgweb` is desired-attached.
+```text
+MV-awg
+MV-awg2
+```
 
-Do not inject `tg://webproxy` into generic VPN subscription formats (Mihomo/FlClash/Hiddify/Happ). It should be exposed separately on the personal subscription page/UI.
+contribute traffic to `MV` but do not receive their own TgWeb credentials.
+
+TgWeb usage is counted exactly once in the aggregate.
+
+## SNI routing
+
+The production-facing flow is:
+
+```text
+Telegram WebProxy client
+    |
+TLS ClientHello, SNI=web.maicraft.tech
+    |
+MAIN :443
+    |
+nginx stream + ssl_preread
+    |
+127.0.0.1:4600
+    |
+tgwebproxy-multi
+```
+
+This requires TgWeb client traffic to expose a TLS ClientHello with the expected SNI before any TLS termination. The patchset must include a pre-deployment verification procedure for this assumption.
+
+The 3x-ui patch does not modify nginx. Production nginx changes remain a separate, explicitly approved deployment step.
+
+## Client CRUD / attachment behavior
+
+Because TgWeb uses normal `client_inbounds`:
+
+- create/edit can select Telegram WebProxy alongside other inbounds;
+- attach/detach APIs remain structurally unchanged;
+- list/paged/hydrate use ordinary `inboundIds`;
+- bulk attach/detach can work through the existing inbound mechanism once protocol-specific validation is safe.
+
+Protocol-specific client defaults must not invent Xray credentials for TgWeb.
+
+Attaching/detaching TgWeb invokes/reconciles only the TgWeb runtime path and must not add TgWeb to Xray.
 
 ## Frontend
 
-The edit form renders one extra option in the same visual selector:
+Add `tgweb` as a supported inbound protocol and display:
 
 ```text
-☑ Telegram WebProxy   [External]
+Telegram WebProxy
 ```
 
-Tooltip: `External Telegram WebProxy. Does not create an Xray inbound.`
+Recommended badge/description:
 
-Internally it binds to `externalInboundKeys`, not to `inboundIds`.
+```text
+External
+Published via SNI routing. Does not create an Xray listener.
+```
 
-The clients table/chip cell can render `Telegram WebProxy` next to real inbound chips while retaining separate data internally.
+TgWeb should have a minimal form. Phase 1 fields:
 
-## Exact upstream files to change
+- public host: `web.maicraft.tech`;
+- public port: `443`.
 
-Backend/schema:
+It should not expose:
 
-- `internal/database/model/model.go`
-- `internal/database/db.go` (AutoMigrate registration / settled checks if needed)
-- `internal/database/migrate_data.go`
-- `internal/web/service/client.go`
-- `internal/web/service/client_lookup.go`
-- `internal/web/service/client_crud.go`
-- `internal/web/service/client_portable.go` (export/import semantics)
-- `internal/web/controller/client.go`
-- new isolated TgWeb service files under `internal/web/service/tgweb/`
+- Xray stream settings;
+- sniffing;
+- TLS/Reality controls;
+- local backend/admin address;
+- admin token.
+
+## Share link / subscription
+
+TgWeb share link:
+
+```text
+tg://webproxy?server=web.maicraft.tech&port=443&secret=<secret>
+```
+
+Expose it only for a client attached to the TgWeb inbound and only through a dedicated/share-link context.
+
+Do not inject `tg://webproxy` into generic VPN subscription payloads for Happ/FlClash/Hiddify/Mihomo.
+
+## Migration from current KIT state
+
+Migration remains idempotent and preserves existing TgWeb secrets/counters.
+
+For each canonical client:
+
+1. if already attached to a `tgweb` inbound, keep it;
+2. if comment contains `[tgweb:off]`, leave detached;
+3. otherwise, if a TgWeb runtime client with the same canonical name exists, attach to the TgWeb inbound;
+4. otherwise leave detached.
+
+After a successful migration, remove only the legacy `[tgweb:off]` marker while preserving the rest of the comment.
+
+Do not silently create TgWeb credentials for every VPN client.
+
+The migration must run before the reconciler switches from legacy comment policy to DB attachment policy.
+
+## Exact upstream areas to change
+
+Backend/model:
+
+- `internal/database/model/model.go` — add `TgWeb` protocol and validator value.
+- `internal/web/service/inbound_protocol.go` — protocol capability/node policy.
+- `internal/web/service/xray.go` — hard exclusion from Xray config generation.
+- `internal/web/runtime/local.go` — local runtime dispatch for TgWeb without Xray restart.
+- `internal/web/service/client_crud.go` — protocol-specific client defaults/validation.
+- `internal/web/service/client_inbound_apply.go` — attach/detach runtime application.
+- new `internal/tgweb/` package.
+- new `internal/web/job/tgweb_job.go`.
+- web startup/job registration alongside existing non-Xray runtimes.
 
 Frontend:
 
-- `frontend/src/schemas/client.ts`
-- `frontend/src/hooks/useClients.ts`
-- `frontend/src/pages/clients/ClientFormModal.tsx`
-- `frontend/src/pages/clients/ClientsPage.tsx`
-- `frontend/src/pages/clients/ClientInfoModal.tsx`
-- locale strings for the new label/tooltip/statuses
+- protocol schemas/registry;
+- inbound form registry;
+- protocol capability gates so TgWeb has no stream/TLS/Reality/sniffing controls;
+- protocol labels/icons/locales;
+- minimal TgWeb settings form.
 
 Tests:
 
-- database migration/model tests;
-- client attach/detach CRUD tests;
-- controller/API compatibility tests;
-- Xray config regression assertion;
-- TgWeb reconciler unit tests using an httptest admin endpoint;
-- frontend schema/form tests.
+- TgWeb protocol/model validation;
+- attach/detach through normal `client_inbounds`;
+- no Xray restart for TgWeb-only attachment changes;
+- Xray config contains no TgWeb data;
+- TgWeb API unavailable does not break normal client changes;
+- enable/disable, expiry and quota behavior;
+- deletion;
+- existing-secret preservation;
+- AWG shadow aggregation;
+- frontend protocol/form capability tests.
 
-## Explicitly not changed
+## Explicitly not changed in this patchset
 
-- Xray config generator;
-- `model.Inbound`;
-- Xray inbound validation;
-- nginx stream config;
-- MTProto/MTG;
+- production nginx;
+- production `connect.maicraft.tech`;
 - UFW;
-- production services.
+- MTG/MTProto behavior;
+- existing Xray protocols;
+- upstream/main.
 
 ## Rollback
 
-Before production deployment, back up the 3x-ui DB.
+Before any eventual production deployment, back up the 3x-ui DB.
 
-Rollback of the panel patch is safe because the only new persistent object is `client_external_inbounds`; an older binary ignores that table. The table may be retained for a later retry or dropped after exporting desired attachments. TgWebProxy remains independently operational.
+The database addition is a normal `inbounds` row with `protocol=tgweb` plus ordinary `client_inbounds` rows. Rollback procedure must first disable/remove that inbound (or migrate assignments back to legacy KIT policy) before starting an older 3x-ui binary that does not recognize `tgweb`.
 
-No production deployment or merge to upstream/main is part of this patchset.
+TgWebProxy remains independently operational.
+
+No production deployment or upstream merge is part of this patchset.
