@@ -183,7 +183,7 @@ diff --git a/internal/tgweb/manager.go b/internal/tgweb/manager.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/tgweb/manager.go
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,226 @@
 +package tgweb
 +
 +import (
@@ -308,6 +308,7 @@ new file mode 100644
 +	for _, d := range current {
 +		byDomain[strings.ToLower(strings.TrimSpace(d.Domain))] = d
 +	}
++	desiredDomains := make(map[string]struct{}, len(desired))
 +
 +	var errs []error
 +	for _, want := range desired {
@@ -315,6 +316,7 @@ new file mode 100644
 +		if domain == "" {
 +			continue
 +		}
++		desiredDomains[domain] = struct{}{}
 +		have := byDomain[domain]
 +		haveByName := make(map[string]SnapshotClient, len(have.Clients))
 +		for _, c := range have.Clients {
@@ -382,6 +384,29 @@ new file mode 100644
 +			errs = append(errs, err)
 +		}
 +	}
++
++	// tgwebproxy-multi is dedicated to this 3x-ui integration. Any runtime
++	// domain no longer represented by a TgWeb inbound must fail closed.
++	// Keep the credentials for reattachment, but disable every one of them.
++	for domain, have := range byDomain {
++		if _, ok := desiredDomains[domain]; ok || len(have.Clients) == 0 {
++			continue
++		}
++		out := snapshotPolicy(have.Clients)
++		changed := false
++		for i := range out {
++			if out[i].Enabled {
++				out[i].Enabled = false
++				changed = true
++			}
++		}
++		if !changed {
++			continue
++		}
++		if err := m.api.Put(ctx, domain, out); err != nil {
++			errs = append(errs, err)
++		}
++	}
 +	return errors.Join(errs...)
 +}
 +
@@ -389,7 +414,7 @@ diff --git a/internal/web/job/tgweb_job.go b/internal/web/job/tgweb_job.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/web/job/tgweb_job.go
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,129 @@
 +package job
 +
 +import (
@@ -508,9 +533,6 @@ new file mode 100644
 +	desired, err := j.desired()
 +	if err != nil {
 +		logger.Warning("tgweb: build desired state failed:", err)
-+		return
-+	}
-+	if len(desired) == 0 {
 +		return
 +	}
 +	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -725,7 +747,7 @@ diff --git a/internal/tgweb/manager_test.go b/internal/tgweb/manager_test.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/tgweb/manager_test.go
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,140 @@
 +package tgweb
 +
 +import (
@@ -839,6 +861,23 @@ new file mode 100644
 +	mv, _ := byName(api.puts["web.maicraft.tech"], "mv")
 +	if mv.Enabled {
 +		t.Fatal("expired client stayed enabled")
++	}
++}
++
++func TestReconcileDisablesRuntimeClientsWhenNoInboundRemains(t *testing.T) {
++	api := &fakeAPI{snapshot: []SnapshotDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []SnapshotClient{{
++			PolicyClient: PolicyClient{Name: "mv", Secret: "00112233445566778899aabbccddeeff", Enabled: true},
++		}},
++	}}}
++	m := NewManager(api)
++	if err := m.Reconcile(context.Background(), nil); err != nil {
++		t.Fatalf("Reconcile: %v", err)
++	}
++	mv, ok := byName(api.puts["web.maicraft.tech"], "mv")
++	if !ok || mv.Enabled {
++		t.Fatalf("orphaned runtime credential must be disabled: %+v", mv)
 +	}
 +}
 +
