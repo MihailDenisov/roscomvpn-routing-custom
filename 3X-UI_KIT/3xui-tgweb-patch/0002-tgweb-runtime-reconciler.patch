@@ -331,7 +331,7 @@ new file mode 100644
 +				continue
 +			}
 +			wantedNames[name] = struct{}{}
-+			existing, ok := haveByName[name]
++			existing := haveByName[name]
 +			secret := existing.Secret
 +			if secret == "" {
 +				secret, err = randomSecret()
