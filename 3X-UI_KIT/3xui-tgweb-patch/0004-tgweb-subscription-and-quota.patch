@@ -183,34 +183,36 @@ index 00000000..65b72ea4
 +  });
 +});
 diff --git a/internal/database/db.go b/internal/database/db.go
-index 08ce9e3e..6f2c1fa7 100644
+index 08ce9e3e..6100b6df 100644
 --- a/internal/database/db.go
 +++ b/internal/database/db.go
-@@ -88,6 +88,7 @@ func allModels() []any {
+@@ -88,6 +88,8 @@ func allModels() []any {
  		&model.OutboundSubscription{},
  		&model.SubBalancer{},
  		&model.TuicTrafficReceipt{},
 +		&model.TgWebTrafficBaseline{},
++		&model.TgWebResetEpoch{},
  	}
  }
  
 diff --git a/internal/database/migrate_data.go b/internal/database/migrate_data.go
-index a6eaf040..3149e329 100644
+index a6eaf040..17038b19 100644
 --- a/internal/database/migrate_data.go
 +++ b/internal/database/migrate_data.go
-@@ -60,6 +60,7 @@ func migrationModels() []any {
+@@ -60,6 +60,8 @@ func migrationModels() []any {
  		&model.OutboundSubscription{},
  		&model.SubBalancer{},
  		&model.TuicTrafficReceipt{},
 +		&model.TgWebTrafficBaseline{},
++		&model.TgWebResetEpoch{},
  	}
  }
  
 diff --git a/internal/database/model/model.go b/internal/database/model/model.go
-index 8421ba6b..2d790316 100644
+index 8421ba6b..09e8e9a8 100644
 --- a/internal/database/model/model.go
 +++ b/internal/database/model/model.go
-@@ -1009,6 +1009,30 @@ type ClientInbound struct {
+@@ -1009,6 +1009,48 @@ type ClientInbound struct {
  
  func (ClientInbound) TableName() string { return "client_inbounds" }
  
@@ -219,11 +221,12 @@ index 8421ba6b..2d790316 100644
 +// shared-quota semantics correct. Attachment state still lives exclusively
 +// in client_inbounds; this table is runtime traffic accounting only.
 +//
-+// ResetSeq is the canonical fact of a 3x-ui traffic reset: every centralized
-+// reset path advances it via tgweb.MarkClientsReset. Unlike counter-drop
-+// heuristics it also fires for clients whose VPN usage is 0 -> 0. SeenResetSeq
-+// is the sequence the TgWeb job has already folded into the baseline; a
-+// mismatch starts a new epoch (baseline pins to the current runtime counters).
++// SeenResetSeq is the tgweb_reset_epochs sequence the TgWeb job has already
++// folded into this baseline; a mismatch starts a new epoch (baseline pins to
++// the current runtime counters). The canonical reset fact lives in
++// TgWebResetEpoch, independent of whether any baseline row exists yet;
++// ResetSeq below is kept only as a compatibility column for installs that
++// already carried it (cleanup candidate for a future migration).
 +type TgWebTrafficBaseline struct {
 +	Id           int    `json:"id" gorm:"primaryKey;autoIncrement"`
 +	Email        string `json:"email" gorm:"uniqueIndex:idx_tgweb_baseline;not null"`
@@ -237,6 +240,23 @@ index 8421ba6b..2d790316 100644
 +}
 +
 +func (TgWebTrafficBaseline) TableName() string { return "tgweb_traffic_baselines" }
++
++// TgWebResetEpoch is the durable, per-client record of 3x-ui traffic resets
++// for shared-quota epoching. It exists independently of any TgWeb baseline
++// row, attachment, or runtime credential: the reset path upserts it inside
++// the core traffic-reset transaction, so the fact survives even when the
++// TgWeb runtime was never observed or is temporarily unavailable. The TgWeb
++// job compares ResetSeq with each baseline's SeenResetSeq; on a mismatch the
++// baseline pins to the current runtime counters and the new epoch starts at
++// zero effective web usage. Unlike counter-drop heuristics this also fires
++// for clients whose VPN usage is 0 -> 0.
++type TgWebResetEpoch struct {
++	Email     string `json:"email" gorm:"primaryKey;size:255"`
++	ResetSeq  int64  `json:"resetSeq" gorm:"column:reset_seq;default:0"`
++	UpdatedAt int64  `json:"updatedAt" gorm:"autoUpdateTime:milli"`
++}
++
++func (TgWebResetEpoch) TableName() string { return "tgweb_reset_epochs" }
 +
  type ClientHwid struct {
  	Id          int    `json:"id" gorm:"primaryKey;autoIncrement"`
@@ -854,61 +874,127 @@ index 56f5ec81..8451a9c3 100644
 +}
 diff --git a/internal/tgweb/reset.go b/internal/tgweb/reset.go
 new file mode 100644
-index 00000000..a554a3f9
+index 00000000..cb000f31
 --- /dev/null
 +++ b/internal/tgweb/reset.go
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,118 @@
 +package tgweb
 +
 +import (
++	"errors"
++	"strings"
++	"time"
++
 +	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
-+	"github.com/mhsanaei/3x-ui/v3/internal/logger"
 +
 +	"gorm.io/gorm"
++	"gorm.io/gorm/clause"
 +)
 +
-+// markResetChunk bounds emails per UPDATE so the statement stays under the
++// markResetChunk bounds emails per statement so the batch stays under the
 +// SQLite host-variable limit and the MySQL packet limit on any real install.
 +const markResetChunk = 500
 +
++// CanonicalResetEmail maps AWG shadow identities (mv-awg, mv-awg2, ...) to
++// their canonical client (mv). AWG shadows share the canonical client's
++// quota, so they must never receive an independent TgWeb reset epoch. Every
++// other email is returned unchanged.
++func CanonicalResetEmail(email string) string {
++	i := strings.LastIndex(email, "-awg")
++	if i <= 0 {
++		return email
++	}
++	for _, r := range email[i+len("-awg"):] {
++		if r < '0' || r > '9' {
++			return email
++		}
++	}
++	return email[:i]
++}
++
 +// MarkClientsReset records the canonical fact of a 3x-ui traffic reset for
-+// the given canonical client emails: every matching baseline row's ResetSeq
-+// advances by one, starting a new shared-quota epoch. An empty emails slice
-+// advances every known row (ResetAllTraffics also covers clients without
-+// TgWeb attachments; the epoch takes effect only for attached ones).
++// the given client emails: every canonical client's reset epoch advances by
++// one, starting a new shared-quota epoch. Rows are created on demand, so the
++// fact survives even when the client has no TgWeb baseline row yet, no
++// attachment, no runtime credential, or the runtime was never observed —
++// including clients whose VPN usage is 0 -> 0, where no counter drop could
++// ever be seen. AWG shadow emails fold into their canonical client.
 +//
-+// It is deliberately best-effort and never returns an error: tgweb quota
-+// bookkeeping must never break a core 3x-ui traffic reset, so failures are
-+// logged and swallowed, and the epoch self-heals on the next TgWeb job tick.
++// The write is fatal and returns an error on purpose: callers invoke it
++// inside the core traffic-reset transaction, so a failed epoch write rolls
++// the whole reset back. Silently continuing would leave the shared quota
++// inconsistent (VPN counters zeroed, epoch lost) — worse than failing the
++// operation. TgWeb runtime unavailability stays non-fatal because this path
++// never touches the runtime at all.
 +//
 +// Call it inside the caller's traffic-write transaction so the reset and the
 +// epoch bump commit atomically.
-+func MarkClientsReset(tx *gorm.DB, emails []string) {
++func MarkClientsReset(tx *gorm.DB, emails []string) error {
 +	if tx == nil {
-+		return
++		return nil
 +	}
-+	bump := func(batch []string) {
-+		// Always build the statement with an explicit predicate: a batch
-+		// scopes to exactly those emails, and an empty batch is a
-+		// deliberate all-row update ("1 = 1"), never an accidental
-+		// unscoped UPDATE that relies on ORM safety-guard behaviour.
-+		q := tx.Model(&model.TgWebTrafficBaseline{})
-+		if len(batch) == 0 {
-+			q = q.Where("1 = 1")
-+		} else {
-+			q = q.Where("email IN ?", batch)
++	canonical := make([]string, 0, len(emails))
++	seen := make(map[string]struct{}, len(emails))
++	for _, email := range emails {
++		c := CanonicalResetEmail(strings.TrimSpace(email))
++		if c == "" {
++			continue
 +		}
-+		if err := q.Update("reset_seq", gorm.Expr("reset_seq + 1")).Error; err != nil {
-+			logger.Warning("tgweb: record quota reset epoch failed:", err)
++		if _, dup := seen[c]; dup {
++			continue
++		}
++		seen[c] = struct{}{}
++		canonical = append(canonical, c)
++	}
++	for start := 0; start < len(canonical); start += markResetChunk {
++		batch := canonical[start:min(start+markResetChunk, len(canonical))]
++		rows := make([]model.TgWebResetEpoch, len(batch))
++		for i, email := range batch {
++			// Absent row -> created with reset_seq 1; existing row -> +1.
++			rows[i] = model.TgWebResetEpoch{Email: email, ResetSeq: 1}
++		}
++		err := tx.Clauses(clause.OnConflict{
++			Columns: []clause.Column{{Name: "email"}},
++			DoUpdates: clause.Assignments(map[string]any{
++				"reset_seq":  gorm.Expr("reset_seq + 1"),
++				"updated_at": time.Now().UnixMilli(),
++			}),
++		}).Create(&rows).Error
++		if err != nil {
++			return err
 +		}
 +	}
-+	if len(emails) == 0 {
-+		bump(nil)
-+		return
++	return nil
++}
++
++// ResetSeqFor returns the canonical reset sequence recorded for a client:
++// the tgweb_reset_epochs row written by the centralized reset paths. As a
++// compatibility read for installs that already carried reset_seq on baseline
++// rows before the epoch table existed, it falls back to the maximum baseline
++// reset_seq when no epoch row is present. Returns 0 when nothing is recorded.
++func ResetSeqFor(db *gorm.DB, email string) (int64, error) {
++	if db == nil {
++		return 0, nil
 +	}
-+	for start := 0; start < len(emails); start += markResetChunk {
-+		bump(emails[start:min(start+markResetChunk, len(emails))])
++	email = CanonicalResetEmail(strings.TrimSpace(email))
++	var epoch model.TgWebResetEpoch
++	res := db.Where("email = ?", email).First(&epoch)
++	if res.Error == nil {
++		return epoch.ResetSeq, nil
 +	}
++	if !errors.Is(res.Error, gorm.ErrRecordNotFound) {
++		return 0, res.Error
++	}
++	// Compatibility fallback: pre-epoch-table installs kept the sequence on
++	// the per-domain baseline rows.
++	var seq int64
++	if err := db.Model(&model.TgWebTrafficBaseline{}).
++		Where("email = ?", email).
++		Select("COALESCE(MAX(reset_seq), 0)").
++		Scan(&seq).Error; err != nil {
++		return 0, err
++	}
++	return seq, nil
 +}
 diff --git a/internal/web/job/tgweb_e2e_test.go b/internal/web/job/tgweb_e2e_test.go
 new file mode 100644
@@ -1141,10 +1227,10 @@ index 00000000..b371439d
 +}
 diff --git a/internal/web/job/tgweb_epoch_test.go b/internal/web/job/tgweb_epoch_test.go
 new file mode 100644
-index 00000000..f50f1585
+index 00000000..e6b327a6
 --- /dev/null
 +++ b/internal/web/job/tgweb_epoch_test.go
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,440 @@
 +package job
 +
 +import (
@@ -1154,19 +1240,51 @@ index 00000000..f50f1585
 +	"github.com/mhsanaei/3x-ui/v3/internal/database"
 +	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
 +	"github.com/mhsanaei/3x-ui/v3/internal/tgweb"
++	"github.com/mhsanaei/3x-ui/v3/internal/web/service"
 +)
 +
-+// epochAPI is a mutable fake tgweb runtime with cumulative counters.
++// epochAPI is a mutable fake tgweb runtime with cumulative counters that
++// records the last policy written per domain.
 +type epochAPI struct {
 +	domains []tgweb.SnapshotDomain
++	puts    map[string][]tgweb.PolicyClient
 +}
 +
 +func (e *epochAPI) Get(_ context.Context) ([]tgweb.SnapshotDomain, error) {
 +	return e.domains, nil
 +}
 +
-+func (e *epochAPI) Put(_ context.Context, _ string, _ []tgweb.PolicyClient) error {
++func (e *epochAPI) Put(_ context.Context, domain string, clients []tgweb.PolicyClient) error {
++	if e.puts == nil {
++		e.puts = map[string][]tgweb.PolicyClient{}
++	}
++	e.puts[domain] = append([]tgweb.PolicyClient(nil), clients...)
 +	return nil
++}
++
++func (e *epochAPI) policy(domain, name string) (tgweb.PolicyClient, bool) {
++	for _, c := range e.puts[domain] {
++		if c.Name == name {
++			return c, true
++		}
++	}
++	return tgweb.PolicyClient{}, false
++}
++
++func epochSeq(t *testing.T, email string) int64 {
++	t.Helper()
++	seq, err := tgweb.ResetSeqFor(database.GetDB(), email)
++	if err != nil {
++		t.Fatalf("reset seq for %s: %v", email, err)
++	}
++	return seq
++}
++
++func markReset(t *testing.T, emails ...string) {
++	t.Helper()
++	if err := tgweb.MarkClientsReset(database.GetDB(), emails); err != nil {
++		t.Fatalf("MarkClientsReset: %v", err)
++	}
 +}
 +
 +func baselineRow(t *testing.T, email, domain string) (model.TgWebTrafficBaseline, bool) {
@@ -1322,7 +1440,7 @@ index 00000000..f50f1585
 +	}
 +
 +	// Штатный reset через централизованный путь (VPN 0 -> 0, наблюдать нечего).
-+	tgweb.MarkClientsReset(database.GetDB(), []string{"bob"})
++	markReset(t, "bob")
 +
 +	// Runtime counters keep accumulating while the panel resets VPN traffic.
 +	api.domains[0].Clients[0].BytesDown = 460
@@ -1331,8 +1449,11 @@ index 00000000..f50f1585
 +	if row.BaselineUp != 0 || row.BaselineDown != 460 {
 +		t.Fatalf("post-reset row = %+v, want baseline pinned to current runtime counters 0/460", row)
 +	}
-+	if row.ResetSeq != 1 || row.SeenResetSeq != 1 {
-+		t.Fatalf("epoch seqs = %d/%d, want 1/1", row.ResetSeq, row.SeenResetSeq)
++	if row.SeenResetSeq != 1 {
++		t.Fatalf("seen seq = %d, want 1", row.SeenResetSeq)
++	}
++	if seq := epochSeq(t, "bob"); seq != 1 {
++		t.Fatalf("recorded reset seq = %d, want 1", seq)
 +	}
 +	// Effective web usage is now max(0, 460-460) = 0: the new period is clean.
 +
@@ -1340,8 +1461,11 @@ index 00000000..f50f1585
 +	api.domains[0].Clients[0].BytesDown = 500
 +	NewTgWebJob().Run()
 +	row, _ = baselineRow(t, "bob", "web.maicraft.tech")
-+	if row.BaselineDown != 460 || row.ResetSeq != 1 || row.SeenResetSeq != 1 {
-+		t.Fatalf("stable epoch row = %+v, want baseline 460, seqs 1/1", row)
++	if row.BaselineDown != 460 || row.SeenResetSeq != 1 {
++		t.Fatalf("stable epoch row = %+v, want baseline 460, seen 1", row)
++	}
++	if seq := epochSeq(t, "bob"); seq != 1 {
++		t.Fatalf("recorded reset seq = %d, want 1", seq)
 +	}
 +}
 +
@@ -1365,12 +1489,15 @@ index 00000000..f50f1585
 +
 +	NewTgWebJob().Run()
 +	resetClientTrafficForTest(t, "mv")
-+	tgweb.MarkClientsReset(database.GetDB(), []string{"mv"})
++	markReset(t, "mv")
 +	api.domains[0].Clients[0].BytesUp = 400
 +	NewTgWebJob().Run()
 +	row, _ := baselineRow(t, "mv", "web.maicraft.tech")
-+	if row.BaselineUp != 400 || row.ResetSeq != 1 || row.SeenResetSeq != 1 {
-+		t.Fatalf("cycle 1 row = %+v, want baseline 400, seqs 1/1", row)
++	if row.BaselineUp != 400 || row.SeenResetSeq != 1 {
++		t.Fatalf("cycle 1 row = %+v, want baseline 400, seen 1", row)
++	}
++	if seq := epochSeq(t, "mv"); seq != 1 {
++		t.Fatalf("recorded reset seq = %d, want 1", seq)
 +	}
 +
 +	// Cycle 2: usage accrues (vpn 30, web +50), then the second reset.
@@ -1385,14 +1512,17 @@ index 00000000..f50f1585
 +		t.Fatalf("pre-reset-2 row = %+v, want baseline 400, vpnSeen 30", row)
 +	}
 +	resetClientTrafficForTest(t, "mv")
-+	tgweb.MarkClientsReset(database.GetDB(), []string{"mv"})
++	markReset(t, "mv")
 +	api.domains[0].Clients[0].BytesUp = 700
 +	api.domains[0].Clients[0].BytesDown = 100
 +	NewTgWebJob().Run()
 +	row, _ = baselineRow(t, "mv", "web.maicraft.tech")
 +	if row.BaselineUp != 700 || row.BaselineDown != 100 || row.VpnSeen != 0 ||
-+		row.ResetSeq != 2 || row.SeenResetSeq != 2 {
-+		t.Fatalf("cycle 2 row = %+v, want baseline 700/100, vpnSeen 0, seqs 2/2", row)
++		row.SeenResetSeq != 2 {
++		t.Fatalf("cycle 2 row = %+v, want baseline 700/100, vpnSeen 0, seen 2", row)
++	}
++	if seq := epochSeq(t, "mv"); seq != 2 {
++		t.Fatalf("recorded reset seq = %d, want 2", seq)
 +	}
 +}
 +
@@ -1423,11 +1553,14 @@ index 00000000..f50f1585
 +	// Runtime temporarily drops the client; the reset happens meanwhile.
 +	api.domains[0].Clients = nil
 +	resetClientTrafficForTest(t, "mv")
-+	tgweb.MarkClientsReset(database.GetDB(), []string{"mv"})
++	markReset(t, "mv")
 +	NewTgWebJob().Run()
 +	row, _ := baselineRow(t, "mv", "web.maicraft.tech")
-+	if row.ResetSeq != 1 || row.SeenResetSeq != 0 || row.BaselineUp != 0 {
-+		t.Fatalf("deferred row = %+v, want pending seq 1/0, baseline untouched", row)
++	if row.SeenResetSeq != 0 || row.BaselineUp != 0 {
++		t.Fatalf("deferred row = %+v, want pending seen 0, baseline untouched", row)
++	}
++	if seq := epochSeq(t, "mv"); seq != 1 {
++		t.Fatalf("recorded reset seq = %d, want 1 (pending, must survive the job tick)", seq)
 +	}
 +
 +	// The client reappears with counters grown during the outage.
@@ -1440,28 +1573,128 @@ index 00000000..f50f1585
 +	if row.BaselineUp != 130 || row.SeenResetSeq != 1 {
 +		t.Fatalf("post-reappear row = %+v, want baseline 130, seen 1", row)
 +	}
++	if seq := epochSeq(t, "mv"); seq != 1 {
++		t.Fatalf("recorded reset seq = %d, want 1", seq)
++	}
++}
++
++// Key durability case: the reset happens while NO baseline row exists and the
++// runtime is down (or never seen); the fact is stored locally. When the
++// runtime later reports cumulative counters, the first sync must treat them
++// as the new epoch's baseline (effective usage 0), and only post-reset
++// traffic counts against the quota.
++func TestTgWebJobEpochResetBeforeBaselineFirstSync(t *testing.T) {
++	setupTgWebJobDB(t)
++	seedTgWebInbound(t, 42, "tgweb-web",
++		"{\"publicHost\":\"web.maicraft.tech\",\"publicPort\":443,\"clients\":[]}", true)
++	rec := seedTgWebClient(t, "mv", 42)
++	seedTraffic(t, "mv", 0, 0)
++	const total = int64(10000)
++	if err := database.GetDB().Model(&model.ClientRecord{}).Where("id = ?", rec.Id).
++		Update("total_gb", total).Error; err != nil {
++		t.Fatalf("set quota: %v", err)
++	}
++
++	// Runtime is unavailable during the reset: no manager configured at all.
++	if err := (&service.InboundService{}).ResetClientTrafficByEmail("mv"); err != nil {
++		t.Fatalf("reset with runtime down: %v", err)
++	}
++	if seq := epochSeq(t, "mv"); seq != 1 {
++		t.Fatalf("recorded reset seq = %d, want 1 (stored without any runtime contact)", seq)
++	}
++
++	// Runtime appears later with cumulative counters 500 up / 200 down.
++	api := &epochAPI{domains: []tgweb.SnapshotDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []tgweb.SnapshotClient{{
++			PolicyClient: tgweb.PolicyClient{Name: "mv", Secret: "s3cr3t", Enabled: true},
++			BytesUp:      500, BytesDown: 200,
++		}},
++	}}}
++	tgweb.SetManagerForTest(tgweb.NewManager(api))
++
++	NewTgWebJob().Run()
++	row, ok := baselineRow(t, "mv", "web.maicraft.tech")
++	if !ok {
++		t.Fatal("baseline row not created on first sync")
++	}
++	if row.BaselineUp != 500 || row.BaselineDown != 200 || row.SeenResetSeq != 1 {
++		t.Fatalf("first-observation row = %+v, want baseline 500/200, seen 1", row)
++	}
++	pol, ok := api.policy("web.maicraft.tech", "mv")
++	if !ok || pol.QuotaBytes != total {
++		t.Fatalf("effective usage must be 0 at first sync: policy = %+v ok=%v, want quota %d", pol, ok, total)
++	}
++
++	// New traffic after the delayed return counts only the post-reset delta.
++	api.domains[0].Clients[0].BytesUp = 600
++	api.domains[0].Clients[0].BytesDown = 220 // total 820, delta 120 over baseline 700
++	NewTgWebJob().Run()
++	pol, ok = api.policy("web.maicraft.tech", "mv")
++	if !ok || pol.QuotaBytes != total-120 {
++		t.Fatalf("post-reset delta must be 120: policy = %+v ok=%v, want quota %d", pol, ok, total-120)
++	}
++}
++
++// Several resets landing before the next job tick collapse into a single
++// catch-up: the baseline pins to the counters observed at the first tick
++// after the last reset, seen catches up to the latest sequence, and no
++// intermediate epoch is applied separately.
++func TestTgWebJobEpochMultipleResetsBeforeTick(t *testing.T) {
++	setupTgWebJobDB(t)
++	seedTgWebInbound(t, 42, "tgweb-web",
++		"{\"publicHost\":\"web.maicraft.tech\",\"publicPort\":443,\"clients\":[]}", true)
++	seedTgWebClient(t, "mv", 42)
++	seedTraffic(t, "mv", 0, 0)
++
++	markReset(t, "mv")
++	markReset(t, "mv")
++	if seq := epochSeq(t, "mv"); seq != 2 {
++		t.Fatalf("recorded reset seq = %d, want 2", seq)
++	}
++
++	api := &epochAPI{domains: []tgweb.SnapshotDomain{{
++		Domain: "web.maicraft.tech",
++		Clients: []tgweb.SnapshotClient{{
++			PolicyClient: tgweb.PolicyClient{Name: "mv", Secret: "s3cr3t", Enabled: true},
++			BytesUp:      1500, BytesDown: 500,
++		}},
++	}}}
++	tgweb.SetManagerForTest(tgweb.NewManager(api))
++
++	NewTgWebJob().Run()
++	row, ok := baselineRow(t, "mv", "web.maicraft.tech")
++	if !ok {
++		t.Fatal("baseline row not created")
++	}
++	if row.BaselineUp != 1500 || row.BaselineDown != 500 || row.SeenResetSeq != 2 {
++		t.Fatalf("compacted row = %+v, want baseline 1500/500, seen 2", row)
++	}
 +}
 diff --git a/internal/web/job/tgweb_job.go b/internal/web/job/tgweb_job.go
-index d4cbf389..a0c2a5ec 100644
+index d4cbf389..1cd60c53 100644
 --- a/internal/web/job/tgweb_job.go
 +++ b/internal/web/job/tgweb_job.go
-@@ -112,12 +112,106 @@ func (j *TgWebJob) desired() ([]tgweb.DesiredDomain, error) {
+@@ -112,12 +112,126 @@ func (j *TgWebJob) desired() ([]tgweb.DesiredDomain, error) {
  	return out, nil
  }
  
 +// syncEpochs pins each client's quota-epoch baseline. The canonical reset
-+// fact is ResetSeq, advanced by every centralized 3x-ui traffic-reset path
-+// via tgweb.MarkClientsReset — including for a client whose VPN usage is
-+// 0 -> 0, where no counter drop could ever be observed. When the sequence
-+// moves, the web baseline pins to the current runtime counters and the new
-+// epoch starts at zero effective web usage. If the runtime entry is missing
-+// at that moment, the pin defers to the next tick that sees the client.
-+// Runtime counters themselves are never reset from here. A missing runtime
-+// entry otherwise keeps the previous baseline — a temporarily absent client
-+// must not corrupt the epoch. As a self-healing fallback for any reset path
-+// not instrumented with MarkClientsReset, the VPN aggregate (including AWG
-+// shadows) dropping below the last observed value also advances the epoch:
-+// VPN counters are cumulative within an epoch, so a drop means a reset.
++// fact is the tgweb_reset_epochs sequence, advanced by every centralized
++// 3x-ui traffic-reset path via tgweb.MarkClientsReset — independently of
++// whether a baseline row, attachment, or runtime credential exists yet, and
++// including a client whose VPN usage is 0 -> 0, where no counter drop could
++// ever be observed. When the recorded sequence moves past what the baseline
++// has seen, the web baseline pins to the current runtime counters and the
++// new epoch starts at zero effective web usage. If the runtime entry is
++// missing at that moment, the pin defers to the next tick that sees the
++// client. Runtime counters themselves are never reset from here. A missing
++// runtime entry otherwise keeps the previous baseline — a temporarily
++// absent client must not corrupt the epoch. As a self-healing fallback for
++// any reset path not instrumented with MarkClientsReset, the VPN aggregate
++// (including AWG shadows) dropping below the last observed value also
++// advances the epoch: VPN counters are cumulative within an epoch, so a
++// drop means a reset.
 +func (j *TgWebJob) syncEpochs(desired []tgweb.DesiredDomain) error {
 +	if len(desired) == 0 {
 +		return nil
@@ -1492,16 +1725,20 @@ index d4cbf389..a0c2a5ec 100644
 +		runtimeClients := counters[domain]
 +		for k := range d.Clients {
 +			dc := &d.Clients[k]
++			seq, err := tgweb.ResetSeqFor(db, dc.Name)
++			if err != nil {
++				return err
++			}
 +			var row model.TgWebTrafficBaseline
 +			res := db.Where("email = ? AND domain = ?", dc.Name, domain).First(&row)
 +			if res.Error == nil {
-+				if row.ResetSeq != row.SeenResetSeq {
++				if seq != row.SeenResetSeq {
 +					if cur, ok := runtimeClients[dc.Name]; ok {
 +						logger.Info("tgweb: quota reset recorded for", dc.Name,
 +							"; advancing web quota baseline to current runtime counters")
 +						row.BaselineUp = cur.BytesUp
 +						row.BaselineDown = cur.BytesDown
-+						row.SeenResetSeq = row.ResetSeq
++						row.SeenResetSeq = seq
 +					}
 +				}
 +				if dc.VPNUsedBytes < row.VpnSeen {
@@ -1510,7 +1747,7 @@ index d4cbf389..a0c2a5ec 100644
 +							"; advancing web quota baseline to current runtime counters")
 +						row.BaselineUp = cur.BytesUp
 +						row.BaselineDown = cur.BytesDown
-+						row.SeenResetSeq = row.ResetSeq
++						row.SeenResetSeq = seq
 +					}
 +				}
 +				row.VpnSeen = dc.VPNUsedBytes
@@ -1518,13 +1755,26 @@ index d4cbf389..a0c2a5ec 100644
 +					return err
 +				}
 +			} else {
-+				// First sighting of this (email, domain): the current epoch
-+				// starts at baseline 0, so historical runtime traffic counts
-+				// against the current quota, exactly like pre-reset VPN bytes.
++				// First sighting of this (email, domain). With no recorded
++				// reset the current epoch starts at baseline 0, so historical
++				// runtime traffic counts against the current quota, exactly
++				// like pre-reset VPN bytes. But if resets were already
++				// recorded before this baseline existed, the cumulative
++				// runtime counters must NOT count as usage of the new period:
++				// this is the first observation after the reset, so the
++				// baseline captures the current counters (0 when the client is
++				// absent from the snapshot) and the epoch starts clean.
 +				row = model.TgWebTrafficBaseline{
-+					Email:   dc.Name,
-+					Domain:  domain,
-+					VpnSeen: dc.VPNUsedBytes,
++					Email:        dc.Name,
++					Domain:       domain,
++					VpnSeen:      dc.VPNUsedBytes,
++					SeenResetSeq: seq,
++				}
++				if seq > 0 {
++					if cur, ok := runtimeClients[dc.Name]; ok {
++						row.BaselineUp = cur.BytesUp
++						row.BaselineDown = cur.BytesDown
++					}
 +				}
 +				if err := db.Create(&row).Error; err != nil {
 +					return err
@@ -1553,7 +1803,7 @@ index d4cbf389..a0c2a5ec 100644
  	defer cancel()
  	if err := tgweb.GetManager().Reconcile(ctx, desired); err != nil {
 diff --git a/internal/web/service/client_traffic.go b/internal/web/service/client_traffic.go
-index 93016eea..365c4156 100644
+index 93016eea..dfc4a19d 100644
 --- a/internal/web/service/client_traffic.go
 +++ b/internal/web/service/client_traffic.go
 @@ -6,6 +6,7 @@ import (
@@ -1564,28 +1814,41 @@ index 93016eea..365c4156 100644
  	"github.com/mhsanaei/3x-ui/v3/internal/util/common"
  	"github.com/mhsanaei/3x-ui/v3/internal/xray"
  
-@@ -90,6 +91,7 @@ func (s *ClientService) BulkResetTraffic(inboundSvc *InboundService, emails []st
+@@ -90,6 +91,9 @@ func (s *ClientService) BulkResetTraffic(inboundSvc *InboundService, emails []st
  				}
  				affected += int(res.RowsAffected)
  			}
-+			tgweb.MarkClientsReset(tx, cleanEmails)
++			if err := tgweb.MarkClientsReset(tx, cleanEmails); err != nil {
++				return err
++			}
  			if err := clearGlobalTraffic(tx, cleanEmails...); err != nil {
  				return err
  			}
-@@ -180,6 +182,8 @@ func (s *ClientService) resetAllClientTrafficsLocked(id int) ([]string, []int, e
+@@ -180,6 +184,10 @@ func (s *ClientService) resetAllClientTrafficsLocked(id int) ([]string, []int, e
  			return result.Error
  		}
  
-+		tgweb.MarkClientsReset(tx, resetEmails)
++		if err := tgweb.MarkClientsReset(tx, resetEmails); err != nil {
++			return err
++		}
 +
  		if err := clearGlobalTraffic(tx, resetEmails...); err != nil {
  			return err
  		}
-@@ -224,6 +228,7 @@ func (s *ClientService) ResetAllTraffics() (bool, error) {
+@@ -224,6 +232,16 @@ func (s *ClientService) ResetAllTraffics() (bool, error) {
  				return res.Error
  			}
  			affected = res.RowsAffected
-+			tgweb.MarkClientsReset(tx, nil)
++			// ResetAll covers every canonical client that participates in the
++			// reset target set, not just clients that already have a TgWeb
++			// baseline row: derive the set from client_traffics itself.
++			var allEmails []string
++			if err := tx.Model(xray.ClientTraffic{}).Distinct().Pluck("email", &allEmails).Error; err != nil {
++				return err
++			}
++			if err := tgweb.MarkClientsReset(tx, allEmails); err != nil {
++				return err
++			}
  			if err := tx.Where("1 = 1").Delete(&model.ClientGlobalTraffic{}).Error; err != nil {
  				return err
  			}
@@ -1608,7 +1871,7 @@ index 0e61d891..d3ff0c11 100644
  			if ib.NodeID != nil {
  				rt, push, _, perr := s.nodePushPlan(&ib)
 diff --git a/internal/web/service/inbound_traffic.go b/internal/web/service/inbound_traffic.go
-index 7f4acb7d..02276502 100644
+index 7f4acb7d..8384e6d5 100644
 --- a/internal/web/service/inbound_traffic.go
 +++ b/internal/web/service/inbound_traffic.go
 @@ -14,6 +14,7 @@ import (
@@ -1619,19 +1882,23 @@ index 7f4acb7d..02276502 100644
  	"github.com/mhsanaei/3x-ui/v3/internal/web/runtime"
  	"github.com/mhsanaei/3x-ui/v3/internal/xray"
  
-@@ -684,6 +685,7 @@ func (s *InboundService) ResetClientTrafficByEmail(clientEmail string) error {
+@@ -684,6 +685,9 @@ func (s *InboundService) ResetClientTrafficByEmail(clientEmail string) error {
  				Updates(map[string]any{"enable": true, "up": 0, "down": 0}).Error; err != nil {
  				return err
  			}
-+			tgweb.MarkClientsReset(tx, []string{clientEmail})
++			if err := tgweb.MarkClientsReset(tx, []string{clientEmail}); err != nil {
++				return err
++			}
  			return tx.Where("email = ?", clientEmail).Delete(&model.NodeClientTraffic{}).Error
  		})
  	})
-@@ -780,6 +782,7 @@ func (s *InboundService) resetClientTrafficLocked(id int, clientEmail string) (b
+@@ -780,6 +784,9 @@ func (s *InboundService) resetClientTrafficLocked(id int, clientEmail string) (b
  		if err := clearGlobalTraffic(tx, clientEmail); err != nil {
  			return err
  		}
-+		tgweb.MarkClientsReset(tx, []string{clientEmail})
++		if err := tgweb.MarkClientsReset(tx, []string{clientEmail}); err != nil {
++			return err
++		}
  		if err := tx.Where("email = ?", clientEmail).Delete(&model.NodeClientTraffic{}).Error; err != nil {
  			return err
  		}
@@ -1796,10 +2063,10 @@ index 00000000..f2ce9c11
 +}
 diff --git a/internal/web/service/tgweb_reset_test.go b/internal/web/service/tgweb_reset_test.go
 new file mode 100644
-index 00000000..c36e9c36
+index 00000000..c152b8e1
 --- /dev/null
 +++ b/internal/web/service/tgweb_reset_test.go
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,249 @@
 +package service
 +
 +import (
@@ -1810,9 +2077,18 @@ index 00000000..c36e9c36
 +	"github.com/mhsanaei/3x-ui/v3/internal/xray"
 +)
 +
++// epochRow reads the durable per-client reset epoch record.
++func epochRow(t *testing.T, email string) (model.TgWebResetEpoch, bool) {
++	t.Helper()
++	var row model.TgWebResetEpoch
++	res := database.GetDB().Where("email = ?", email).First(&row)
++	return row, res.Error == nil
++}
++
 +// The centralized reset paths must record the canonical TgWeb quota reset
 +// even when the client's VPN usage is 0 -> 0: a counter drop can never
 +// signal that, so the fact has to be written by the reset path itself.
++// The fact is stored in tgweb_reset_epochs, independent of any baseline row.
 +func TestResetClientTrafficByEmailAdvancesTgWebEpoch(t *testing.T) {
 +	setupConflictDB(t)
 +	if err := database.GetDB().Create(&xray.ClientTraffic{Email: "bob", Up: 100, Down: 50, Enable: true}).Error; err != nil {
@@ -1835,12 +2111,14 @@ index 00000000..c36e9c36
 +	if tr.Up != 0 || tr.Down != 0 {
 +		t.Fatalf("VPN counters = %d/%d, want 0/0", tr.Up, tr.Down)
 +	}
-+	var row model.TgWebTrafficBaseline
-+	if err := database.GetDB().Where("email = ?", "bob").First(&row).Error; err != nil {
-+		t.Fatalf("baseline row: %v", err)
++	if row, ok := epochRow(t, "bob"); !ok || row.ResetSeq != 1 {
++		t.Fatalf("epoch row = %+v ok=%v, want reset_seq 1 created by the reset path", row, ok)
 +	}
-+	if row.ResetSeq != 1 || row.SeenResetSeq != 0 {
-+		t.Fatalf("epoch seqs = %d/%d, want reset_seq 1 (bumped), seen 0 (job folds it later)", row.ResetSeq, row.SeenResetSeq)
++	// No baseline row may exist yet, and none is needed for the fact to persist.
++	var n int64
++	if err := database.GetDB().Model(&model.TgWebTrafficBaseline{}).
++		Where("email = ?", "bob").Count(&n).Error; err != nil {
++		t.Fatalf("count baselines: %v", err)
 +	}
 +}
 +
@@ -1861,12 +2139,8 @@ index 00000000..c36e9c36
 +		t.Fatalf("BulkResetTraffic: %v", err)
 +	}
 +	for _, email := range []string{"bob", "alice"} {
-+		var row model.TgWebTrafficBaseline
-+		if err := database.GetDB().Where("email = ?", email).First(&row).Error; err != nil {
-+			t.Fatalf("baseline row %s: %v", email, err)
-+		}
-+		if row.ResetSeq != 1 {
-+			t.Fatalf("%s reset_seq = %d, want 1", email, row.ResetSeq)
++		if row, ok := epochRow(t, email); !ok || row.ResetSeq != 1 {
++			t.Fatalf("%s epoch row = %+v ok=%v, want reset_seq 1", email, row, ok)
 +		}
 +	}
 +}
@@ -1890,12 +2164,8 @@ index 00000000..c36e9c36
 +	}
 +
 +	for _, email := range []string{"alice", "bob"} {
-+		var row model.TgWebTrafficBaseline
-+		if err := database.GetDB().Where("email = ?", email).First(&row).Error; err != nil {
-+			t.Fatalf("baseline row %s: %v", email, err)
-+		}
-+		if row.ResetSeq != 1 {
-+			t.Fatalf("%s reset_seq = %d, want 1 (0 -> 0 VPN reset is still a real epoch)", email, row.ResetSeq)
++		if row, ok := epochRow(t, email); !ok || row.ResetSeq != 1 {
++			t.Fatalf("%s epoch row = %+v ok=%v, want reset_seq 1 (0 -> 0 VPN reset is still a real epoch)", email, row, ok)
 +		}
 +		var tr xray.ClientTraffic
 +		if err := database.GetDB().Where("email = ?", email).First(&tr).Error; err != nil {
@@ -1924,18 +2194,11 @@ index 00000000..c36e9c36
 +		t.Fatalf("BulkResetTraffic: %v", err)
 +	}
 +
-+	var alice, bob model.TgWebTrafficBaseline
-+	if err := database.GetDB().Where("email = ?", "alice").First(&alice).Error; err != nil {
-+		t.Fatalf("alice baseline: %v", err)
++	if row, ok := epochRow(t, "bob"); !ok || row.ResetSeq != 1 {
++		t.Fatalf("bob epoch row = %+v ok=%v, want 1", row, ok)
 +	}
-+	if err := database.GetDB().Where("email = ?", "bob").First(&bob).Error; err != nil {
-+		t.Fatalf("bob baseline: %v", err)
-+	}
-+	if bob.ResetSeq != 1 {
-+		t.Fatalf("bob reset_seq = %d, want 1", bob.ResetSeq)
-+	}
-+	if alice.ResetSeq != 0 {
-+		t.Fatalf("alice reset_seq = %d, want 0 (untouched by bob's reset)", alice.ResetSeq)
++	if row, ok := epochRow(t, "alice"); ok && row.ResetSeq != 0 {
++		t.Fatalf("alice epoch row = %+v, want absent or 0 (untouched by bob's reset)", row)
 +	}
 +}
 +
@@ -1955,12 +2218,101 @@ index 00000000..c36e9c36
 +		if err := svc.ResetClientTrafficByEmail("bob"); err != nil {
 +			t.Fatalf("ResetClientTrafficByEmail pass %d: %v", want, err)
 +		}
-+		var row model.TgWebTrafficBaseline
-+		if err := database.GetDB().Where("email = ?", "bob").First(&row).Error; err != nil {
-+			t.Fatalf("baseline row: %v", err)
++		if row, ok := epochRow(t, "bob"); !ok || row.ResetSeq != want {
++			t.Fatalf("pass %d: epoch row = %+v ok=%v, want reset_seq %d", want, row, ok, want)
 +		}
-+		if row.ResetSeq != want {
-+			t.Fatalf("pass %d: reset_seq = %d, want %d", want, row.ResetSeq, want)
++	}
++}
++
++// A reset landing before any TgWeb baseline row (and before the runtime was
++// ever observed) must still be durably recorded: the epoch row is created by
++// the reset path itself, nothing else is required.
++func TestResetBeforeBaselineCreatesEpochOnly(t *testing.T) {
++	setupConflictDB(t)
++	if err := database.GetDB().Create(&xray.ClientTraffic{Email: "mv", Up: 0, Down: 0, Enable: true}).Error; err != nil {
++		t.Fatalf("seed traffic: %v", err)
++	}
++
++	if err := (&InboundService{}).ResetClientTrafficByEmail("mv"); err != nil {
++		t.Fatalf("ResetClientTrafficByEmail: %v", err)
++	}
++
++	if row, ok := epochRow(t, "mv"); !ok || row.ResetSeq != 1 {
++		t.Fatalf("epoch row = %+v ok=%v, want reset_seq 1 created without any baseline", row, ok)
++	}
++	var n int64
++	if err := database.GetDB().Model(&model.TgWebTrafficBaseline{}).
++		Where("email = ?", "mv").Count(&n).Error; err != nil {
++		t.Fatalf("count baselines: %v", err)
++	}
++	if n != 0 {
++		t.Fatalf("baseline rows = %d, want 0 (job captures counters on first sight)", n)
++	}
++}
++
++// ResetAll must bump the epoch of every canonical client in the reset target
++// set, even when nobody has a TgWeb baseline row yet.
++func TestResetAllWithoutBaselinesCreatesEpochs(t *testing.T) {
++	setupConflictDB(t)
++	for _, email := range []string{"alice", "bob", "mv"} {
++		if err := database.GetDB().Create(&xray.ClientTraffic{Email: email, Up: 5, Down: 5, Enable: true}).Error; err != nil {
++			t.Fatalf("seed traffic: %v", err)
 +		}
++	}
++
++	if _, err := (&ClientService{}).ResetAllTraffics(); err != nil {
++		t.Fatalf("ResetAllTraffics: %v", err)
++	}
++
++	for _, email := range []string{"alice", "bob", "mv"} {
++		if row, ok := epochRow(t, email); !ok || row.ResetSeq != 1 {
++			t.Fatalf("%s epoch row = %+v ok=%v, want reset_seq 1", email, row, ok)
++		}
++	}
++}
++
++// AWG shadow identities share the canonical client's quota: resetting
++// shadow traffic must fold into the canonical epoch and never mint an
++// independent TgWeb identity.
++func TestResetCanonicalizesAWGShadowEmails(t *testing.T) {
++	setupConflictDB(t)
++	if err := database.GetDB().Create(&xray.ClientTraffic{Email: "mv-awg2", Up: 7, Down: 3, Enable: true}).Error; err != nil {
++		t.Fatalf("seed traffic: %v", err)
++	}
++
++	if err := (&InboundService{}).ResetClientTrafficByEmail("mv-awg2"); err != nil {
++		t.Fatalf("ResetClientTrafficByEmail: %v", err)
++	}
++
++	if row, ok := epochRow(t, "mv"); !ok || row.ResetSeq != 1 {
++		t.Fatalf("canonical epoch row = %+v ok=%v, want reset_seq 1", row, ok)
++	}
++	if _, ok := epochRow(t, "mv-awg2"); ok {
++		t.Fatal("AWG shadow must not receive an independent TgWeb reset epoch")
++	}
++}
++
++// A failed epoch write must fail the whole reset and roll the VPN counter
++// zeroing back: VPN reset + lost epoch marker would leave the shared quota
++// inconsistent, which is worse than a failed operation.
++func TestResetEpochWriteFailureRollsBackReset(t *testing.T) {
++	setupConflictDB(t)
++	if err := database.GetDB().Create(&xray.ClientTraffic{Email: "mv", Up: 100, Down: 50, Enable: true}).Error; err != nil {
++		t.Fatalf("seed traffic: %v", err)
++	}
++	if err := database.GetDB().Migrator().DropTable(&model.TgWebResetEpoch{}); err != nil {
++		t.Fatalf("drop epoch table: %v", err)
++	}
++
++	if err := (&InboundService{}).ResetClientTrafficByEmail("mv"); err == nil {
++		t.Fatal("reset must fail when the epoch write fails")
++	}
++
++	var tr xray.ClientTraffic
++	if err := database.GetDB().Where("email = ?", "mv").First(&tr).Error; err != nil {
++		t.Fatalf("traffic row: %v", err)
++	}
++	if tr.Up != 100 || tr.Down != 50 {
++		t.Fatalf("VPN counters = %d/%d, want 100/50 (transaction rolled back)", tr.Up, tr.Down)
 +	}
 +}
