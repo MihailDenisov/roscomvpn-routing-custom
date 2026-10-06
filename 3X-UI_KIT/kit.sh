@@ -62,6 +62,7 @@ tgweb_sync_user() {
   total=$(jq -r '.totalGB // 0' <<<"$rec")
   exp=$(jq -r '.expiryTime // 0' <<<"$rec")
   enabled=$(jq -r '.enable // false' <<<"$rec")
+  if ! tgweb_policy_enabled "$name"; then enabled=false; fi
   ((exp > 0)) && exp=$((exp / 1000))
   (
     flock -x 9
@@ -116,6 +117,14 @@ shared_used() {
   vpn=$(jq -r --arg n "$name" '[.[] | select(.email == $n or (.email | test("^" + $n + "-awg[0-9]*$"))) | ((.traffic.up // 0) + (.traffic.down // 0))] | add // 0' <<<"$all")
   web=$(tgweb_used "$name")
   echo $((vpn + web))
+}
+
+tgweb_policy_enabled() {
+  local rec comment
+  rec=$(client "$1")
+  [[ -n $rec ]] || return 1
+  comment=$(jq -r '.comment // ""' <<<"$rec")
+  [[ $comment != *"[tgweb:off]"* ]]
 }
 
 API=""
@@ -333,7 +342,7 @@ cmd_sync() {
     while IFS= read -r name; do
       [[ -n $name ]] || continue
       tgweb_sync_user "$name"
-    done < <(clients | jq -r '.[] | select((.comment // "") == "kit") | .email | select(test("-awg[0-9]*$") | not)')
+    done < <(clients | jq -r '.[] | select(.subId != null) | .email | select(test("-awg[0-9]*$") | not)' | sort -u)
     say "TgWebProxy синхронизирован со всеми KIT-пользователями."
     return
   fi
@@ -341,6 +350,32 @@ cmd_sync() {
   [[ -n $(client "$target") ]] || die "Нет пользователя $target"
   tgweb_sync_user "$target"
   say "TgWebProxy синхронизирован для $target."
+}
+
+cmd_web() {
+  local name=${1:-} state=${2:-} rec comment next
+  valid_name "$name"
+  rec=$(client "$name"); [[ -n $rec ]] || die "Нет пользователя $name"
+  comment=$(jq -r '.comment // ""' <<<"$rec")
+  case "$state" in
+    on)
+      next=$(sed -E 's/[[:space:]]*\[tgweb:off\][[:space:]]*/ /g; s/^ +| +$//g; s/  +/ /g' <<<"$comment")
+      ;;
+    off)
+      if [[ $comment == *"[tgweb:off]"* ]]; then next=$comment
+      elif [[ -n $comment ]]; then next="$comment [tgweb:off]"
+      else next="[tgweb:off]"
+      fi
+      ;;
+    *) die "Использование: kit user web имя on|off" ;;
+  esac
+  update_user "$name" ".comment = \$c" --arg c "$next"
+  tgweb_sync_user "$name"
+  if [[ $state == on ]]; then
+    say "TgWebProxy для $name включён."
+  else
+    say "TgWebProxy для $name выключен. В 3x-ui это отмечено [tgweb:off] в Comment."
+  fi
 }
 
 cmd_del() {
@@ -403,6 +438,7 @@ ${B}kit${N} — управление 3X-UI KIT
   kit user repair имя                                      восстановить REALITY flow у старого пользователя
   kit user off имя  /  kit user on имя                    выключить и включить
   kit user sync имя|--all                                 синхронизировать TgWebProxy
+  kit user web имя on|off                                TgWebProxy для одного пользователя
   kit user del имя                                        удалить
 EOF
 }
@@ -417,6 +453,7 @@ case "${1:-} ${2:-}" in
   "user off") cmd_toggle "${3:-}" false ;;
   "user on") cmd_toggle "${3:-}" true ;;
   "user sync") shift 2; cmd_sync "$@" ;;
+  "user web") shift 2; cmd_web "$@" ;;
   "user del") shift 2; cmd_del "$@" ;;
   *) usage ;;
 esac
