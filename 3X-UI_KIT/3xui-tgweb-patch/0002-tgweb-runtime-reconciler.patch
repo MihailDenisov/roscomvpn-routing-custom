@@ -649,6 +649,19 @@ diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service
  				// it (removing the last client stops the sidecar) regardless of the
  				// client's enable state.
 
+diff --git a/internal/web/service/inbound_clients.go b/internal/web/service/inbound_clients.go
+--- a/internal/web/service/inbound_clients.go
++++ b/internal/web/service/inbound_clients.go
+@@ -236,6 +236,8 @@ func (s *InboundService) buildTargetClientFromSource(source model.Client, targetInbound *model.Inbound, email string, flow string) (model.Client, error) {
+ 		target.Auth = s.generateRandomCredential(targetProtocol)
+ 	case model.MTProto:
+ 		target.Secret = model.GenerateFakeTLSSecret(mtprotoDomainFromSettings(targetInbound.Settings))
++	case model.TgWeb:
++		// Runtime secret belongs to tgwebproxy-multi and is never copied into 3x-ui.
+ 	case model.TUIC:
+ 		target.ID = uuid.NewString()
+ 		target.Password = s.generateRandomCredential(targetProtocol)
+
 diff --git a/internal/web/service/inbound_tgweb_client_test.go b/internal/web/service/inbound_tgweb_client_test.go
 new file mode 100644
 --- /dev/null
