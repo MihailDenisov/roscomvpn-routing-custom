@@ -58,16 +58,22 @@ while IFS= read -r name; do
   total=$(jq -r '.totalGB // 0' <<<"$primary")
   expiry=$(jq -r '.expiryTime // 0' <<<"$primary")
   panel_enabled=$(jq -r '.enable // false' <<<"$primary")
-  comment=$(jq -r '.comment // ""' <<<"$primary")
-  policy_enabled=true
-  [[ $comment == *"[tgweb:off]"* ]] && policy_enabled=false
+  # New patched 3x-ui is the source of truth. During the transition only,
+  # fall back to the legacy comment marker when externalInboundKeys is absent.
+  attached=false
+  if jq -e 'has("externalInboundKeys")' <<<"$primary" >/dev/null; then
+    jq -e '(.externalInboundKeys // []) | index("tgweb") != null' <<<"$primary" >/dev/null && attached=true
+  else
+    comment=$(jq -r '.comment // ""' <<<"$primary")
+    [[ $comment != *"[tgweb:off]"* ]] && attached=true
+  fi
   vpn_used=$(jq -r --arg n "$name" '[.[] | select(.email == $n or (.email | test("^" + $n + "-awg[0-9]*$"))) | ((.traffic.up // 0) + (.traffic.down // 0))] | add // 0' <<<"$xc")
   existing=$(jq -c --arg n "$name" 'map(select(.name == $n))[0] // empty' <<<"$wc")
   web_used=$(jq -r --arg n "$name" 'map(select(.name == $n))[0] | ((.bytes_up // 0) + (.bytes_down // 0)) // 0' <<<"$wc")
 
   allowed=true
   [[ $panel_enabled == true ]] || allowed=false
-  [[ $policy_enabled == true ]] || allowed=false
+  [[ $attached == true ]] || allowed=false
   ((expiry == 0 || expiry > now_ms)) || allowed=false
   if ((total > 0 && vpn_used + web_used >= total)); then
     allowed=false
@@ -83,12 +89,16 @@ while IFS= read -r name; do
   fi
   exp_s=0; ((expiry > 0)) && exp_s=$((expiry / 1000))
   if [[ -n $existing ]]; then
+    # Keep the existing secret even when detached; detached means disabled.
     wc_new=$(jq -c --arg n "$name" --argjson e "$allowed" --argjson x "$exp_s" --argjson q "$web_quota" '
       map(if .name == $n then .enabled=$e | .expires_unix=$x | .quota_bytes=$q else . end)' <<<"$wc")
-  else
+  elif [[ $attached == true ]]; then
+    # Only an explicit desired attachment is allowed to mint a new credential.
     secret=$(openssl rand -hex 16)
     wc_new=$(jq -c --arg n "$name" --arg s "$secret" --argjson e "$allowed" --argjson x "$exp_s" --argjson q "$web_quota" '
       map(select(.name != "_bootstrap")) + [{name:$n,secret:$s,enabled:$e,expires_unix:$x,quota_bytes:$q}]' <<<"$wc")
+  else
+    wc_new=$wc
   fi
   if [[ $wc_new != "$wc" ]]; then wc=$wc_new; changed=yes; fi
 
