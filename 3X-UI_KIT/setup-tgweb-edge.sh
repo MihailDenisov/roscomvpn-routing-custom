@@ -64,7 +64,9 @@ if [[ -z $SSH_PORT ]]; then
   SSH_PORT=$(ss -H -lntp 2>/dev/null | awk '/sshd/ {sub(/.*:/,"",$4);print $4;exit}')
   SSH_PORT=${SSH_PORT:-22}
 fi
-[[ $SSH_PORT =~ ^[0-9]+$ ]] && ((SSH_PORT>=1 && SSH_PORT<=65535)) || die "invalid SSH port"
+if [[ ! $SSH_PORT =~ ^[0-9]+$ ]] || ((SSH_PORT < 1 || SSH_PORT > 65535)); then
+  die "invalid SSH port"
+fi
 
 DNS_IP=$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk 'NR==1{print $1}')
 if [[ -z $DNS_IP ]]; then
