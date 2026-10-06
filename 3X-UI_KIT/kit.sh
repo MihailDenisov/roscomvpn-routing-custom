@@ -213,22 +213,18 @@ cmd_link() {
     for suffix in "" -awg; do
       raw=$(curl -fsSk -m 10 -A "v2rayN/7" -H "Host: $HOST" "http://127.0.0.1:$SUB_INTERNAL$SUB_PATH$sid$suffix" 2>/dev/null || true)
       grep -q '://' <<<"$raw" || raw=$(base64 -d <<<"$raw" 2>/dev/null || true)
-      out+=$(grep -E '^(vpn|tg)://' <<<"$raw" || true)$'\n'
+      out+="$(grep -E '^(vpn|tg)://' <<<"$raw" || true)"
+      out+=$'\n'
     done
-    # В SINGLE-режиме MTProto снаружи всегда приходит на общий TCP/443.
-    # Не полагаемся на внутренний порт inbound: 3x-ui/externalProxy мог вернуть
-    # любое сохранённое значение.
     if [[ ${SINGLE:-no} == yes ]]; then
       out=$(sed -E '/^tg:\/\/proxy\?/ s/([?&]port=)[0-9]+/\\1443/' <<<"$out")
     fi
-    out+=$(tgweb_link "$name")  fi
-}
-\n'
-    echo; grep . <<<"$out" || echo "Отдельных ссылок нет."
+    out+="$(tgweb_link "$name")"
+    out+=$'\n'
+    echo
+    grep . <<<"$out" || echo "Отдельных ссылок нет."
   fi
 }
-
-
 cmd_list() {
   local now
   now=$(($(date +%s) * 1000))
