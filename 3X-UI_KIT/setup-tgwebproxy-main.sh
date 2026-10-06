@@ -173,6 +173,34 @@ TGWEB_TOKEN_FILE=$TOKEN_FILE
 EOF
 chmod 600 /etc/kit/tgweb.env
 
+if [[ -f "$(dirname "$0")/tgweb-reconcile.sh" ]]; then
+  install -m 0755 "$(dirname "$0")/tgweb-reconcile.sh" /usr/local/sbin/kit-tgweb-reconcile
+  cat >/etc/systemd/system/kit-tgweb-reconcile.service <<EOF
+[Unit]
+Description=Reconcile shared 3x-ui and TgWebProxy traffic limits
+After=tgwebproxy.service x-ui.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kit-tgweb-reconcile
+EOF
+  cat >/etc/systemd/system/kit-tgweb-reconcile.timer <<EOF
+[Unit]
+Description=Reconcile shared TgWebProxy traffic limits
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=kit-tgweb-reconcile.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now kit-tgweb-reconcile.timer
+fi
+
 say "installed without changing MTProto/MTG"
 echo "public: https://$DOMAIN:443"
 echo "backend: $TGWP_LISTEN"
