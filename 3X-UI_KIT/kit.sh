@@ -101,6 +101,7 @@ tgweb_delete_user() {
 
 tgweb_link() {
   [[ $TGWEB_ENABLED == yes ]] || return 0
+  tgweb_policy_enabled "$1" || return 0
   local sec
   sec=$(tgweb_clients | jq -r --arg n "$1" 'map(select(.name == $n))[0].secret // empty')
   [[ -n $sec ]] && printf 'tg://webproxy?server=%s&secret=%s\n' "$TGWEB_DOMAIN" "$sec"
@@ -119,16 +120,21 @@ shared_used() {
   echo $((vpn + web))
 }
 
+tgweb_inbound_id() {
+  api GET inbounds/options | jq -r '[.[] | select(.protocol == "tgweb") | .id] | first // empty'
+}
+
 tgweb_policy_enabled() {
-  local rec comment
+  local rec comment id
   rec=$(client "$1")
   [[ -n $rec ]] || return 1
-  if jq -e 'has("externalInboundKeys")' <<<"$rec" >/dev/null; then
-    jq -e '(.externalInboundKeys // []) | index("tgweb") != null' <<<"$rec" >/dev/null
+  id=$(tgweb_inbound_id)
+  if [[ -n $id ]]; then
+    jq -e --argjson i "$id" '(.inboundIds // []) | index($i) != null' <<<"$rec" >/dev/null
     return
   fi
-  # Transitional compatibility with an unpatched panel. Once the DB migration
-  # has completed, externalInboundKeys is authoritative and this path is unused.
+  # Transitional compatibility with an unpatched panel. Once a tgweb inbound
+  # exists, ordinary client_inbounds attachment is authoritative.
   comment=$(jq -r '.comment // ""' <<<"$rec")
   [[ $comment != *"[tgweb:off]"* ]]
 }
@@ -359,17 +365,18 @@ cmd_sync() {
 }
 
 cmd_web() {
-  local name=${1:-} state=${2:-} rec comment next
+  local name=${1:-} state=${2:-} rec comment next id
   valid_name "$name"
   rec=$(client "$name"); [[ -n $rec ]] || die "Нет пользователя $name"
+  id=$(tgweb_inbound_id)
 
-  if jq -e 'has("externalInboundKeys")' <<<"$rec" >/dev/null; then
+  if [[ -n $id ]]; then
     case "$state" in
       on)
-        api POST "clients/$name/attach" '{"externalInboundKeys":["tgweb"]}' >/dev/null
+        api POST "clients/$name/attach" "$(jq -nc --argjson i "$id" '{inboundIds:[$i]}')" >/dev/null
         ;;
       off)
-        api POST "clients/$name/detach" '{"externalInboundKeys":["tgweb"]}' >/dev/null
+        api POST "clients/$name/detach" "$(jq -nc --argjson i "$id" '{inboundIds:[$i]}')" >/dev/null
         ;;
       *) die "Использование: kit user web имя on|off" ;;
     esac
