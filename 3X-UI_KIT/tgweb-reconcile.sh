@@ -9,7 +9,11 @@ KIT_ENV=/etc/kit/kit.env
 TGWEB_ENV=/etc/kit/tgweb.env
 [[ -f $XUI_ENV && -f $KIT_ENV && -f $TGWEB_ENV ]] || exit 0
 # shellcheck disable=SC1090
-. "$XUI_ENV"; . "$KIT_ENV"; . "$TGWEB_ENV"
+. "$XUI_ENV"
+# shellcheck disable=SC1090
+. "$KIT_ENV"
+# shellcheck disable=SC1090
+. "$TGWEB_ENV"
 [[ -s $TGWEB_TOKEN_FILE ]] || exit 0
 TOKEN=$(cat "$TGWEB_TOKEN_FILE")
 
