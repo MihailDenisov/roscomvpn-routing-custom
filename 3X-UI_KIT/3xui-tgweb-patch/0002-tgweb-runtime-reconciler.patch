@@ -950,3 +950,194 @@ new file mode 100644
 +		t.Fatalf("Reconcile error = %v, want %v", err, want)
 +	}
 +}
+diff --git a/internal/web/job/tgweb_job_test.go b/internal/web/job/tgweb_job_test.go
+new file mode 100755
+index 00000000..ac060e4e
+--- /dev/null
++++ b/internal/web/job/tgweb_job_test.go
+@@ -0,0 +1,185 @@
++package job
++
++import (
++	"path/filepath"
++	"testing"
++
++	"github.com/mhsanaei/3x-ui/v3/internal/database"
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++	"github.com/mhsanaei/3x-ui/v3/internal/tgweb"
++	"github.com/mhsanaei/3x-ui/v3/internal/xray"
++)
++
++func setupTgWebJobDB(t *testing.T) {
++	t.Helper()
++	if err := database.InitDB(filepath.Join(t.TempDir(), "tgweb_job.db")); err != nil {
++		t.Fatalf("database.InitDB failed: %v", err)
++	}
++	t.Cleanup(func() { _ = database.CloseDB() })
++}
++
++func seedTgWebInbound(t *testing.T, id int, tag, settings string, enable bool) {
++	t.Helper()
++	ib := &model.Inbound{
++		Id:       id,
++		Tag:      tag,
++		Protocol: model.TgWeb,
++		Port:     0,
++		Enable:   enable,
++		Settings: settings,
++	}
++	if err := database.GetDB().Create(ib).Error; err != nil {
++		t.Fatalf("create tgweb inbound: %v", err)
++	}
++}
++
++func seedTgWebClient(t *testing.T, email string, inboundId int) model.ClientRecord {
++	t.Helper()
++	rec := &model.ClientRecord{Email: email, Enable: true}
++	if err := database.GetDB().Create(rec).Error; err != nil {
++		t.Fatalf("create client %s: %v", email, err)
++	}
++	link := &model.ClientInbound{ClientId: rec.Id, InboundId: inboundId}
++	if err := database.GetDB().Create(link).Error; err != nil {
++		t.Fatalf("attach client %s to inbound %d: %v", email, inboundId, err)
++	}
++	return *rec
++}
++
++func seedTraffic(t *testing.T, email string, up, down int64) {
++	t.Helper()
++	tr := &xray.ClientTraffic{Email: email, Up: up, Down: down, Enable: true}
++	if err := database.GetDB().Create(tr).Error; err != nil {
++		t.Fatalf("create traffic for %s: %v", email, err)
++	}
++}
++
++func desiredDomain(t *testing.T, desired []tgweb.DesiredDomain, domain string) (tgweb.DesiredDomain, bool) {
++	t.Helper()
++	for _, d := range desired {
++		if d.Domain == domain {
++			return d, true
++		}
++	}
++	return tgweb.DesiredDomain{}, false
++}
++
++func desiredClient(t *testing.T, clients []tgweb.DesiredClient, name string) (tgweb.DesiredClient, bool) {
++	t.Helper()
++	for _, c := range clients {
++		if c.Name == name {
++			return c, true
++		}
++	}
++	return tgweb.DesiredClient{}, false
++}
++
++func TestTgWebJobDesiredAggregatesAWGShadowTraffic(t *testing.T) {
++	setupTgWebJobDB(t)
++	seedTgWebInbound(t, 42, "tgweb-web",
++		`{"publicHost":"web.maicraft.tech","publicPort":443,"clients":[]}`, true)
++	seedTgWebClient(t, "mv", 42)
++
++	seedTraffic(t, "mv", 100, 0)
++	seedTraffic(t, "mv-awg", 50, 0)
++	seedTraffic(t, "mv-awg2", 30, 0)
++	// Not a shadow: trailing suffix is not purely numeric.
++	seedTraffic(t, "mv-awg-x", 999, 0)
++	// Unrelated client must never be merged into mv.
++	seedTraffic(t, "other", 777, 0)
++
++	desired, err := NewTgWebJob().desired()
++	if err != nil {
++		t.Fatalf("desired: %v", err)
++	}
++	d, ok := desiredDomain(t, desired, "web.maicraft.tech")
++	if !ok {
++		t.Fatalf("domain web.maicraft.tech missing from %+v", desired)
++	}
++	mv, ok := desiredClient(t, d.Clients, "mv")
++	if !ok {
++		t.Fatalf("client mv missing from %+v", d.Clients)
++	}
++	if want := int64(100 + 50 + 30); mv.VPNUsedBytes != want {
++		t.Fatalf("mv VPNUsedBytes = %d, want %d (AWG shadows merged, awg-x/other excluded)", mv.VPNUsedBytes, want)
++	}
++}
++
++func TestTgWebJobDesiredSkipsDisabledAndMalformedInbounds(t *testing.T) {
++	setupTgWebJobDB(t)
++	seedTgWebInbound(t, 1, "tgweb-enabled",
++		`{"publicHost":"web.maicraft.tech","publicPort":443,"clients":[]}`, true)
++	seedTgWebClient(t, "enabled-user", 1)
++
++	seedTgWebInbound(t, 2, "tgweb-disabled",
++		`{"publicHost":"off.example.com","publicPort":443,"clients":[]}`, false)
++	seedTgWebClient(t, "disabled-user", 2)
++
++	seedTgWebInbound(t, 3, "tgweb-malformed", `{"publicHost":""}`, true)
++	seedTgWebInbound(t, 4, "tgweb-notjson", `{not json`, true)
++
++	// Non-TgWeb inbound must be ignored entirely.
++	other := &model.Inbound{Id: 5, Tag: "vless-443", Protocol: model.VLESS, Port: 443, Enable: true,
++		Settings: `{"clients":[]}`}
++	if err := database.GetDB().Create(other).Error; err != nil {
++		t.Fatalf("create vless inbound: %v", err)
++	}
++
++	desired, err := NewTgWebJob().desired()
++	if err != nil {
++		t.Fatalf("desired: %v", err)
++	}
++	d, ok := desiredDomain(t, desired, "web.maicraft.tech")
++	if !ok {
++		t.Fatalf("enabled domain missing from %+v", desired)
++	}
++	if _, ok := desiredClient(t, d.Clients, "enabled-user"); !ok {
++		t.Fatalf("enabled-user missing from %+v", d.Clients)
++	}
++
++	// Disabled inbound: domain may exist for fail-closed disable, but must not
++	// carry the disabled user's desired attachment.
++	off, ok := desiredDomain(t, desired, "off.example.com")
++	if ok {
++		if _, found := desiredClient(t, off.Clients, "disabled-user"); found {
++			t.Fatalf("disabled inbound leaked a desired client: %+v", off.Clients)
++		}
++	}
++
++	for _, bad := range []string{"", "localhost"} {
++		if _, found := desiredDomain(t, desired, bad); found {
++			t.Fatalf("malformed inbound produced domain %q", bad)
++		}
++	}
++	if len(desired) > 2 {
++		t.Fatalf("unexpected extra domains: %+v", desired)
++	}
++}
++
++func TestTgWebJobDesiredGroupsClientsAcrossInboundsByDomain(t *testing.T) {
++	setupTgWebJobDB(t)
++	seedTgWebInbound(t, 10, "tgweb-a",
++		`{"publicHost":"WEB.MAICRAFT.TECH","publicPort":443,"clients":[]}`, true)
++	seedTgWebInbound(t, 11, "tgweb-b",
++		`{"publicHost":"web.maicraft.tech","publicPort":8443,"clients":[]}`, true)
++	seedTgWebClient(t, "first", 10)
++	seedTgWebClient(t, "second", 11)
++
++	desired, err := NewTgWebJob().desired()
++	if err != nil {
++		t.Fatalf("desired: %v", err)
++	}
++	if len(desired) != 1 {
++		t.Fatalf("domains = %+v, want one merged lowercase domain", desired)
++	}
++	d := desired[0]
++	if d.Domain != "web.maicraft.tech" {
++		t.Fatalf("domain = %q, want lowercase web.maicraft.tech", d.Domain)
++	}
++	if _, ok := desiredClient(t, d.Clients, "first"); !ok {
++		t.Fatalf("first missing from %+v", d.Clients)
++	}
++	if _, ok := desiredClient(t, d.Clients, "second"); !ok {
++		t.Fatalf("second missing from %+v", d.Clients)
++	}
++}

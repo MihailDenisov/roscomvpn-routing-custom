@@ -146,7 +146,7 @@ def tgweb_link_for_sub(sub_id):
                 continue
             for client in item.get("clients") or []:
                 if client.get("name") == email and client.get("secret"):
-                    return f"tg://webproxy?server={domain}&secret={client['secret']}"
+                    return f"https://t.me/webproxy?secret={client['secret']}&server={domain}"
     except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError, KeyError):
         return ""
     return ""

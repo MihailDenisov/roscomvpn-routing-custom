@@ -298,12 +298,12 @@ It should not expose:
 TgWeb share link:
 
 ```text
-tg://webproxy?server=web.maicraft.tech&port=443&secret=<secret>
+https://t.me/webproxy?secret=<secret>&server=web.maicraft.tech
 ```
 
 Expose it only for a client attached to the TgWeb inbound and only through a dedicated/share-link context.
 
-Do not inject `tg://webproxy` into generic VPN subscription payloads for Happ/FlClash/Hiddify/Mihomo.
+Do not inject the TgWeb share link (`https://t.me/webproxy`) into generic VPN subscription payloads for Happ/FlClash/Hiddify/Mihomo.
 
 ## Migration from current KIT state
 

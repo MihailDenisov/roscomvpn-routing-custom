@@ -104,7 +104,7 @@ tgweb_link() {
   tgweb_policy_enabled "$1" || return 0
   local sec
   sec=$(tgweb_clients | jq -r --arg n "$1" 'map(select(.name == $n))[0].secret // empty')
-  [[ -n $sec ]] && printf 'tg://webproxy?server=%s&secret=%s\n' "$TGWEB_DOMAIN" "$sec"
+  [[ -n $sec ]] && printf 'https://t.me/webproxy?secret=%s&server=%s\n' "$sec" "$TGWEB_DOMAIN"
 }
 
 tgweb_used() {
