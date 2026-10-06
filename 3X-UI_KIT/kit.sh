@@ -23,7 +23,9 @@ die()  { printf '%s\n' "${R}✗${N}  $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "Запустите от root: sudo -i, затем команду ещё раз."
 [[ -f $XUI_ENV && -f $KIT_ENV ]] || die "Не найдена установка — сначала поставьте сервер скриптом 3x-ui.sh."
 # shellcheck disable=SC1090
-. "$XUI_ENV"; . "$KIT_ENV"
+. "$XUI_ENV"
+# shellcheck disable=SC1090
+. "$KIT_ENV"
 
 TGWEB_ENV=/etc/kit/tgweb.env
 TGWEB_ENABLED=no
@@ -174,6 +176,8 @@ human() { # байты → «1.2 ГБ»
     printf (i == 1 ? "%d %s" : "%.1f %s"), b, u[i] }'
 }
 
+# SUB_BASE is loaded from /etc/kit/kit.env.
+# shellcheck disable=SC2153
 sub_url() { echo "${SUB_BASE}$1"; }
 
 show_link() { # имя subId
