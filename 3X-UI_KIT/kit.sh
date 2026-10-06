@@ -62,8 +62,11 @@ tgweb_sync_user() { # name; preserve secret if it already exists
   ((exp > 0)) && exp=$((exp / 1000))
   quota=0
   if ((total > 0)); then
+    local web_used
+    web_used=$(jq -r --arg n "$name" 'map(select(.name == $n))[0] | ((.bytes_up // 0) + (.bytes_down // 0)) // 0' <<<"$all")
     quota=$((total - used))
     ((quota < 1)) && quota=1
+    if ((used + web_used >= total)); then enabled=false; fi
   fi
   if jq -e --arg n "$name" 'any(.[]; .name == $n)' <<<"$all" >/dev/null; then
     all=$(jq -c --arg n "$name" --argjson e "$enabled" --argjson x "$exp" --argjson q "$quota" '
