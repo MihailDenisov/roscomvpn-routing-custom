@@ -395,3 +395,11 @@ The installer validates the existing `10446` HTTPS fallback, never edits
 backend/admin ports. Client state and traffic counters live under
 `/var/lib/tgwebproxy`; the private API token is stored in
 `/etc/tgwebproxy/admin.token`.
+
+
+The installer also enables `kit-tgweb-reconcile.timer` (30 seconds). It treats
+3x-ui and TgWebProxy traffic as one allowance: the TgWeb quota is continuously
+reduced by traffic already consumed through 3x-ui, while TgWeb's own persisted
+usage remains part of the same total. When combined usage reaches `totalGB`,
+the TgWeb capability and that user's 3x-ui client records are disabled. The
+timer only changes per-user policy; it does not stop or reconfigure MTProto/MTG.
