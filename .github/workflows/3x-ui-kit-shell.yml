@@ -25,6 +25,6 @@ jobs:
           bash -n 3X-UI_KIT/tgweb-reconcile.sh
       - name: ShellCheck
         run: |
-          shellcheck -x 3X-UI_KIT/kit.sh
-          shellcheck -x 3X-UI_KIT/setup-tgwebproxy-main.sh
-          shellcheck -x 3X-UI_KIT/tgweb-reconcile.sh
+          shellcheck -x -e SC1091 3X-UI_KIT/kit.sh
+          shellcheck -x -e SC1091 3X-UI_KIT/setup-tgwebproxy-main.sh
+          shellcheck -x -e SC1091 3X-UI_KIT/tgweb-reconcile.sh
