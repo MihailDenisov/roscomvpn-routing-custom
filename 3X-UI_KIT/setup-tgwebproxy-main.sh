@@ -192,6 +192,13 @@ TGWEB_TOKEN_FILE=$TOKEN_FILE
 EOF
 chmod 600 /etc/kit/tgweb.env
 
+install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
+cat >/etc/letsencrypt/renewal-hooks/deploy/tgwebproxy-nginx <<'EOF'
+#!/bin/sh
+systemctl is-active --quiet nginx && systemctl reload nginx || true
+EOF
+chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/tgwebproxy-nginx
+
 reconcile_src="$tmp/tgweb-reconcile.sh"
 if [[ -f "$(dirname "$0")/tgweb-reconcile.sh" ]]; then
   cp "$(dirname "$0")/tgweb-reconcile.sh" "$reconcile_src"
