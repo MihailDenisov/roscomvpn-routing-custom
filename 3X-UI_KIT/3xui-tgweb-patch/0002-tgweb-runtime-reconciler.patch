@@ -628,6 +628,27 @@ diff --git a/internal/web/service/client_inbound_apply.go b/internal/web/service
  		newClientId = clients[0].ID
  	}
 
+@@ -1019,7 +1027,9 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *model.Inbound, oldEmail string) (bool, error) {
+ 	if len(oldEmail) > 0 {
+ 		if oldInbound.NodeID == nil {
+ 			if !push {
+ 				needRestart = true
+-			} else if oldInbound.Protocol == model.MTProto {
++			} else if oldInbound.Protocol == model.TgWeb {
++				// Desired state is reconciled asynchronously.
++			} else if oldInbound.Protocol == model.MTProto {
+ 				inboundSvc.applyLocalMtproto(oldInbound.Id)
+@@ -1207,7 +1217,9 @@ func (s *ClientService) DeleteInboundClient(inboundSvc *InboundService, id int, email string) (bool, error) {
+ 	if len(email) > 0 {
+ 		if oldInbound.NodeID == nil {
+-			if oldInbound.Protocol == model.MTProto {
++			if oldInbound.Protocol == model.TgWeb {
++				// Removing the client_inbounds row is enough; TgWebJob disables it.
++			} else if oldInbound.Protocol == model.MTProto {
+ 				// mtg serves the full secret set, so any client delete re-applies
+ 				// it (removing the last client stops the sidecar) regardless of the
+ 				// client's enable state.
+
 diff --git a/internal/web/service/inbound_tgweb_client_test.go b/internal/web/service/inbound_tgweb_client_test.go
 new file mode 100644
 --- /dev/null
