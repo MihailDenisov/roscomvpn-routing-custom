@@ -6,7 +6,14 @@ Run only against an OFFLINE COPY / STAGING database first.
 This script never calls PUT on tgwebproxy-multi: it reads GET /clients only,
 so existing secrets and usage counters cannot be modified.
 
-Decision per canonical client (matched by email/name):
+Idempotency model
+-----------------
+A marker row in the existing 3x-ui settings table
+(`tgweb_client_inbounds_migration_v1 = complete`) is the single source of
+truth for "migration has run".
+
+Before the marker is complete, the legacy rules apply per canonical client
+(matched by email/name):
 
   1. already attached to a tgweb inbound            -> keep attached
   2. comment contains [tgweb:off]                   -> detached, marker stripped
@@ -14,28 +21,25 @@ Decision per canonical client (matched by email/name):
   4. no marker and no runtime credential            -> detached
 
 AWG shadow identities (email ending in -awg, -awg2, ...) are never treated
-as standalone TgWeb identities and are left untouched.
+as standalone TgWeb identities and are left untouched. The [tgweb:off]
+marker is stripped (adjacent whitespace only; the rest of the comment is
+preserved) and is not used again.
 
-The marker is stripped (adjacent whitespace only; the rest of the comment is
-preserved) and is not used again after migration. Note: a client detached via
-rule 2 keeps its runtime credential (secrets must survive); if the script is
-run a second time, rule 3 would attach such a client because the marker is
-gone. Run once against the production database (or record the pre-migration
-comment backup) — see NEEDS FOLLOW-UP in the test report.
-
-Idempotency guarantees:
-  * repeated runs never duplicate inbound rows or client_inbounds rows
-    (INSERT OR IGNORE / explicit existence checks);
-  * attached clients stay attached; untouched clients stay untouched;
-  * marker stripping happens at most once.
+After the marker is complete, client_inbounds is the ONLY authoritative
+attachment state: runtime credentials are never consulted again and a rerun
+is a no-op. This closes the previous re-attach defect where a stripped
+marker plus a retained (disabled) runtime credential re-attached opted-out
+clients on the second run.
 
 Optional --names-json bypasses the runtime query (staging / offline tests):
-  ./migrate_legacy.py --db x.db --names-json '["mv","alice"]'
+  ./migrate_legacy.py --db x.db --names-json '["mv","alice"]' --apply
 """
 import argparse, json, os, re, sqlite3, urllib.request
 
 MARKER = "[tgweb:off]"
 SHADOW = re.compile(r"-awg\d*$")
+SETTINGS_KEY = "tgweb_client_inbounds_migration_v1"
+SETTINGS_VALUE = "complete"
 
 
 def read_env(path):
@@ -67,6 +71,20 @@ def strip_marker(comment):
     return re.sub(r"\s*\[tgweb:off\]\s*", " ", comment or "").strip()
 
 
+def migration_state(con):
+    row = con.execute("SELECT value FROM settings WHERE key = ?", (SETTINGS_KEY,)).fetchone()
+    return row[0] if row else None
+
+
+def complete_migration(con):
+    if migration_state(con) is None:
+        con.execute("INSERT INTO settings (key, value) VALUES (?, ?)",
+                    (SETTINGS_KEY, SETTINGS_VALUE))
+    else:
+        con.execute("UPDATE settings SET value = ? WHERE key = ?",
+                    (SETTINGS_VALUE, SETTINGS_KEY))
+
+
 def ensure_tgweb_inbound(con, domain, public_port):
     row = con.execute(
         "SELECT id FROM inbounds WHERE protocol='tgweb' AND node_id IS NULL "
@@ -92,21 +110,31 @@ def main():
     ap.add_argument("--names-json", default=None,
                     help="JSON array of runtime client names; skips the runtime query")
     ap.add_argument("--apply", action="store_true", help="commit changes (default: dry-run)")
+    ap.add_argument("--force-legacy", action="store_true",
+                    help="run legacy rules even if the migration marker is complete")
     args = ap.parse_args()
-
-    if args.names_json is not None:
-        names = set(json.loads(args.names_json))
-        domain = os.environ.get("TGWEB_DOMAIN", "web.maicraft.tech")
-        public_port = 443
-    else:
-        env = read_env(args.env)
-        domain = env["TGWEB_DOMAIN"]
-        public_port = int(env.get("TGWEB_PUBLIC_PORT", "443"))
-        names = tgweb_names(env["TGWEB_ADMIN"], env["TGWEB_TOKEN_FILE"], domain)
 
     con = sqlite3.connect(args.db)
     con.row_factory = sqlite3.Row
     try:
+        state = migration_state(con)
+        if state == SETTINGS_VALUE and not args.force_legacy:
+            # client_inbounds is authoritative; runtime credentials are never
+            # consulted after migration. Reruns are no-ops by design.
+            print(json.dumps({"alreadyMigrated": True, "dryRun": not args.apply},
+                             ensure_ascii=False))
+            return
+
+        if args.names_json is not None:
+            names = set(json.loads(args.names_json))
+            domain = os.environ.get("TGWEB_DOMAIN", "web.maicraft.tech")
+            public_port = 443
+        else:
+            env = read_env(args.env)
+            domain = env["TGWEB_DOMAIN"]
+            public_port = int(env.get("TGWEB_PUBLIC_PORT", "443"))
+            names = tgweb_names(env["TGWEB_ADMIN"], env["TGWEB_TOKEN_FILE"], domain)
+
         inbound_id, created_inbound = ensure_tgweb_inbound(con, domain, public_port)
 
         attached = detached = untouched = kept = 0
@@ -144,6 +172,9 @@ def main():
                 con.execute("UPDATE clients SET comment=? WHERE id=?",
                             (new_comment, row["id"]))
 
+        if args.apply:
+            complete_migration(con)
+
         print(json.dumps({
             "tgwebInboundId": inbound_id,
             "tgwebInboundCreated": created_inbound,
@@ -153,6 +184,7 @@ def main():
             "untouched": untouched,
             "markersStripped": stripped,
             "tgwebRuntimeUsers": len(names),
+            "migrationCompleted": bool(args.apply),
             "dryRun": not args.apply,
         }, ensure_ascii=False))
         if args.apply:
