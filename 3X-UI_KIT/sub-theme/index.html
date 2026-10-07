@@ -120,7 +120,7 @@ summary::-webkit-details-marker{display:none}summary::after{content:"⌄";color:
 
     <section class="card">
       <details id="extra-links">
-        <summary><span>🧩 Остальные ссылки</span><span class="pill">MTProto · Amnezia · TUIC</span></summary>
+        <summary><span>🧩 Остальные ссылки</span><span class="pill">MTProto · WebProxy · Amnezia · TUIC</span></summary>
         <div class="details-body">
           <div class="links-wrap" id="links-box">
             {{range $i, $link := .links}}
@@ -245,9 +245,10 @@ setInterval(refreshStatus,5000);
 const linksBox=document.getElementById('links-box');
 const visible=[];
 document.querySelectorAll('.link-card').forEach(card=>{
-  const raw=card.dataset.link||'', lower=raw.toLowerCase();
+  const raw=card.dataset.link||'', lower=raw.toLowerCase(), kind=card.dataset.kind||'';
   let order=99,title='Конфигурация',icon='🔐';
   if(lower.startsWith('tg://')){order=1;title='Telegram MTProto';icon='✈️'}
+  else if(kind==='tgweb'){order=1.5;title='Telegram WebProxy';icon='✈️'}
   else if(lower.startsWith('vpn://')){order=2;title='AmneziaVPN';icon='🛡️'}
   else if(lower.startsWith('wireguard://')){order=2;title='AmneziaWG';icon='🛡️'}
   else if(lower.startsWith('tuic://')){order=3;title='TUIC';icon='⚡'}
@@ -258,8 +259,11 @@ document.querySelectorAll('.link-card').forEach(card=>{
   card.querySelector('.proto-icon').textContent=icon;
   visible.push(card);
 
-  if(lower.startsWith('tg://')){
-    const a=card.querySelector('.open-link');a.href=raw;a.style.display='inline-flex';a.textContent='Открыть в Telegram';
+  if(lower.startsWith('tg://')||kind==='tgweb'){
+    const a=card.querySelector('.open-link');
+    a.href=(kind==='tgweb'&&card.dataset.openLink)?card.dataset.openLink:raw;
+    a.style.display='inline-flex';
+    a.textContent='Открыть в Telegram';
   }
   const details=card.querySelector('.mini-details');
   details.addEventListener('toggle',()=>{if(details.open) makeQr(card.querySelector('.link-qr'),raw)});
