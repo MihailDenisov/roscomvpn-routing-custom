@@ -23,7 +23,121 @@ die()  { printf '%s\n' "${R}✗${N}  $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "Запустите от root: sudo -i, затем команду ещё раз."
 [[ -f $XUI_ENV && -f $KIT_ENV ]] || die "Не найдена установка — сначала поставьте сервер скриптом 3x-ui.sh."
 # shellcheck disable=SC1090
-. "$XUI_ENV"; . "$KIT_ENV"
+. "$XUI_ENV"
+# shellcheck disable=SC1090
+. "$KIT_ENV"
+
+TGWEB_ENV=/etc/kit/tgweb.env
+TGWEB_ENABLED=no
+if [[ -f $TGWEB_ENV ]]; then
+  # shellcheck disable=SC1090
+  . "$TGWEB_ENV"
+  if [[ -n ${TGWEB_DOMAIN:-} && -n ${TGWEB_ADMIN:-} && -s ${TGWEB_TOKEN_FILE:-/nonexistent} ]]; then
+    TGWEB_TOKEN=$(cat "$TGWEB_TOKEN_FILE")
+    TGWEB_ENABLED=yes
+  fi
+fi
+
+tgweb_api() {
+  [[ $TGWEB_ENABLED == yes ]] || return 0
+  if [[ $1 == GET ]]; then
+    curl -fsS -m 10 -H "Authorization: Bearer $TGWEB_TOKEN" "$TGWEB_ADMIN/clients"
+  else
+    curl -fsS -m 10 -H "Authorization: Bearer $TGWEB_TOKEN" -H 'Content-Type: application/json' -X PUT -d "$2" "$TGWEB_ADMIN/clients" >/dev/null
+  fi
+}
+
+tgweb_clients() {
+  [[ $TGWEB_ENABLED == yes ]] || { echo '[]'; return; }
+  tgweb_api GET | jq -c --arg d "$TGWEB_DOMAIN" 'map(select(.domain == $d))[0].clients // []'
+}
+
+tgweb_sync_user() {
+  [[ $TGWEB_ENABLED == yes ]] || return 0
+  local name=$1 rec used total exp enabled all web_used quota existing fresh
+  local xc
+  xc=$(clients)
+  rec=$(jq -c --arg n "$name" 'map(select(.email == $n))[0] // empty' <<<"$xc"); [[ -n $rec ]] || return 0
+  used=$(jq -r --arg n "$name" '[.[] | select(.email == $n or (.email | test("^" + $n + "-awg[0-9]*$"))) | ((.traffic.up // 0) + (.traffic.down // 0))] | add // 0' <<<"$xc")
+  total=$(jq -r '.totalGB // 0' <<<"$rec")
+  exp=$(jq -r '.expiryTime // 0' <<<"$rec")
+  enabled=$(jq -r '.enable // false' <<<"$rec")
+  if ! tgweb_policy_enabled "$name"; then enabled=false; fi
+  ((exp > 0)) && exp=$((exp / 1000))
+  (
+    flock -x 9
+    all=$(tgweb_clients | jq -c 'map(select(.name != "_bootstrap"))')
+    web_used=$(jq -r --arg n "$name" 'map(select(.name == $n))[0] | ((.bytes_up // 0) + (.bytes_down // 0)) // 0' <<<"$all")
+    quota=0
+    if ((total > 0)); then
+      quota=$((total - used))
+      ((quota < 1)) && quota=1
+      ((used + web_used >= total)) && enabled=false
+    fi
+    existing=$(jq -c --arg n "$name" 'map(select(.name == $n))[0] // empty' <<<"$all")
+    if [[ -n $existing ]]; then
+      existing=$(jq -c --argjson e "$enabled" --argjson x "$exp" --argjson q "$quota" '.enabled=$e | .expires_unix=$x | .quota_bytes=$q' <<<"$existing")
+    else
+      existing=$(jq -nc --arg n "$name" --arg s "$(openssl rand -hex 16)" --argjson e "$enabled" --argjson x "$exp" --argjson q "$quota" '{name:$n,secret:$s,enabled:$e,expires_unix:$x,quota_bytes:$q}')
+    fi
+    fresh=$(jq -c --arg n "$name" --argjson v "$existing" 'map(select(.name != $n and .name != "_bootstrap")) + [$v]' <<<"$all")
+    tgweb_api PUT "$(jq -nc --arg d "$TGWEB_DOMAIN" --argjson c "$fresh" '{domain:$d,clients:$c}')"
+  ) 9>/run/lock/kit-tgweb.lock
+}
+
+tgweb_delete_user() {
+  [[ $TGWEB_ENABLED == yes ]] || return 0
+  local name=$1 all sec
+  (
+    flock -x 9
+    all=$(tgweb_clients | jq -c --arg n "$name" 'map(select(.name != $n and .name != "_bootstrap"))')
+    if [[ $(jq length <<<"$all") -eq 0 ]]; then
+      sec=$(cat /etc/tgwebproxy/bootstrap.secret)
+      all=$(jq -nc --arg s "$sec" '[{name:"_bootstrap",secret:$s,enabled:false}]')
+    fi
+    tgweb_api PUT "$(jq -nc --arg d "$TGWEB_DOMAIN" --argjson c "$all" '{domain:$d,clients:$c}')"
+  ) 9>/run/lock/kit-tgweb.lock
+}
+
+tgweb_link() {
+  [[ $TGWEB_ENABLED == yes ]] || return 0
+  tgweb_policy_enabled "$1" || return 0
+  local sec
+  sec=$(tgweb_clients | jq -r --arg n "$1" 'map(select(.name == $n))[0].secret // empty')
+  [[ -n $sec ]] && printf 'https://t.me/webproxy?secret=%s&server=%s\n' "$sec" "$TGWEB_DOMAIN"
+}
+
+tgweb_used() {
+  [[ $TGWEB_ENABLED == yes ]] || { echo 0; return; }
+  tgweb_clients | jq -r --arg n "$1" 'map(select(.name == $n))[0] | ((.bytes_up // 0) + (.bytes_down // 0)) // 0'
+}
+
+shared_used() {
+  local name=$1 all vpn web
+  all=$(clients)
+  vpn=$(jq -r --arg n "$name" '[.[] | select(.email == $n or (.email | test("^" + $n + "-awg[0-9]*$"))) | ((.traffic.up // 0) + (.traffic.down // 0))] | add // 0' <<<"$all")
+  web=$(tgweb_used "$name")
+  echo $((vpn + web))
+}
+
+tgweb_inbound_id() {
+  api GET inbounds/options | jq -r '[.[] | select(.protocol == "tgweb") | .id] | first // empty'
+}
+
+tgweb_policy_enabled() {
+  local rec comment id
+  rec=$(client "$1")
+  [[ -n $rec ]] || return 1
+  id=$(tgweb_inbound_id)
+  if [[ -n $id ]]; then
+    jq -e --argjson i "$id" '(.inboundIds // []) | index($i) != null' <<<"$rec" >/dev/null
+    return
+  fi
+  # Transitional compatibility with an unpatched panel. Once a tgweb inbound
+  # exists, ordinary client_inbounds attachment is authoritative.
+  comment=$(jq -r '.comment // ""' <<<"$rec")
+  [[ $comment != *"[tgweb:off]"* ]]
+}
 
 API=""
 for scheme in https http; do
@@ -85,6 +199,8 @@ human() { # байты → «1.2 ГБ»
     printf (i == 1 ? "%d %s" : "%.1f %s"), b, u[i] }'
 }
 
+# SUB_BASE is loaded from /etc/kit/kit.env.
+# shellcheck disable=SC2153
 sub_url() { echo "${SUB_BASE}$1"; }
 
 show_link() { # имя subId
@@ -121,6 +237,7 @@ cmd_add() {
     limitIp: $ip, enable: true, comment: "kit"}, inboundIds: $ids}')
   api POST clients/add "$body" >/dev/null
   awg_attach "$name" "$sid" "$(gb_bytes "$gb")" "$(days_ms "$days")" "$devices"
+  tgweb_sync_user "$name"
   say "Пользователь $name добавлен во все протоколы ($(api GET inbounds/list | jq length))$( ((gb)) && echo ", лимит $gb ГБ")$( ((days)) && echo ", на $days дн")."
   show_link "$name" "$sid"
 }
@@ -136,18 +253,18 @@ cmd_link() {
     for suffix in "" -awg; do
       raw=$(curl -fsSk -m 10 -A "v2rayN/7" -H "Host: $HOST" "http://127.0.0.1:$SUB_INTERNAL$SUB_PATH$sid$suffix" 2>/dev/null || true)
       grep -q '://' <<<"$raw" || raw=$(base64 -d <<<"$raw" 2>/dev/null || true)
-      out+=$(grep -E '^(vpn|tg)://' <<<"$raw" || true)$'\n'
+      out+="$(grep -E '^(vpn|tg)://' <<<"$raw" || true)"
+      out+=$'\n'
     done
-    # В SINGLE-режиме MTProto снаружи всегда приходит на общий TCP/443.
-    # Не полагаемся на внутренний порт inbound: 3x-ui/externalProxy мог вернуть
-    # любое сохранённое значение.
     if [[ ${SINGLE:-no} == yes ]]; then
-      out=$(sed -E '/^tg:\/\/proxy\?/ s/([?&]port=)[0-9]+/\\1443/' <<<"$out")
+      out=$(sed -E '/^tg:\/\/proxy\?/ s/([?&])port=[0-9]+/\\1port=443/' <<<"$out")
     fi
-    echo; grep . <<<"$out" || echo "Отдельных ссылок нет."
+    out+="$(tgweb_link "$name")"
+    out+=$'\n'
+    echo
+    grep . <<<"$out" || echo "Отдельных ссылок нет."
   fi
 }
-
 cmd_list() {
   local now
   now=$(($(date +%s) * 1000))
@@ -158,7 +275,9 @@ cmd_list() {
   {
     printf "${B}%-18s %-22s %-14s %-10s %s${N}\n" "Пользователь" "Трафик" "До" "Статус" "Был в сети"
     while IFS=$'\t' read -r email used total exp en last; do
-      local tr till st seen
+      local tr till st seen web_used
+      web_used=$(tgweb_used "$email")
+      used=$((used + web_used))
       tr="$(human "$used")"; ((total > 0)) && tr="$tr / $(human "$total")"
       if ((exp > 0)); then till=$(date -d "@$((exp / 1000))" +%d.%m.%Y); else till="бессрочно"; fi
       if [[ $en != true ]]; then st="${R}выключен${N}"
@@ -208,14 +327,84 @@ cmd_limit() {
     esac
   done
   update_user "$name" "$f" --argjson gb "${gb:-0}" --argjson days "${days:-0}" --argjson dev "${dev:-0}"
+  tgweb_sync_user "$name"
   say "Лимиты $name обновлены (0 — без ограничений)."
 }
 
 cmd_toggle() { # имя true|false
   valid_name "$1"
-  [[ -n $(client "$1") ]] || die "Нет пользователя $1"
+  local current total used
+  current=$(client "$1"); [[ -n $current ]] || die "Нет пользователя $1"
+  if [[ $2 == true ]]; then
+    total=$(jq -r '.totalGB // 0' <<<"$current")
+    used=$(shared_used "$1")
+    if ((total > 0 && used >= total)); then
+      die "Общий лимит трафика исчерпан. Сначала увеличьте лимит пользователя."
+    fi
+  fi
   update_user "$1" ".enable = \$v" --argjson v "$2"
+  tgweb_sync_user "$1"
   if [[ $2 == true ]]; then say "Пользователь $1 включён."; else say "Пользователь $1 выключен — подписка и подключения не работают."; fi
+}
+
+cmd_sync() {
+  local target=${1:-}
+  if [[ $target == --all ]]; then
+    local name
+    while IFS= read -r name; do
+      [[ -n $name ]] || continue
+      tgweb_sync_user "$name"
+    done < <(clients | jq -r '.[] | select(.subId != null) | .email | select(test("-awg[0-9]*$") | not)' | sort -u)
+    say "TgWebProxy синхронизирован со всеми KIT-пользователями."
+    return
+  fi
+  valid_name "$target"
+  [[ -n $(client "$target") ]] || die "Нет пользователя $target"
+  tgweb_sync_user "$target"
+  say "TgWebProxy синхронизирован для $target."
+}
+
+cmd_web() {
+  local name=${1:-} state=${2:-} rec comment next id
+  valid_name "$name"
+  rec=$(client "$name"); [[ -n $rec ]] || die "Нет пользователя $name"
+  id=$(tgweb_inbound_id)
+
+  if [[ -n $id ]]; then
+    case "$state" in
+      on)
+        api POST "clients/$name/attach" "$(jq -nc --argjson i "$id" '{inboundIds:[$i]}')" >/dev/null
+        ;;
+      off)
+        api POST "clients/$name/detach" "$(jq -nc --argjson i "$id" '{inboundIds:[$i]}')" >/dev/null
+        ;;
+      *) die "Использование: kit user web имя on|off" ;;
+    esac
+  else
+    # Transitional fallback for an installation where the 3x-ui patch has not
+    # been deployed yet. The migration converts this marker into desired state.
+    comment=$(jq -r '.comment // ""' <<<"$rec")
+    case "$state" in
+      on)
+        next=$(sed -E 's/[[:space:]]*\[tgweb:off\][[:space:]]*/ /g; s/^ +| +$//g; s/  +/ /g' <<<"$comment")
+        ;;
+      off)
+        if [[ $comment == *"[tgweb:off]"* ]]; then next=$comment
+        elif [[ -n $comment ]]; then next="$comment [tgweb:off]"
+        else next="[tgweb:off]"
+        fi
+        ;;
+      *) die "Использование: kit user web имя on|off" ;;
+    esac
+    update_user "$name" ".comment = \$c" --arg c "$next"
+  fi
+
+  tgweb_sync_user "$name"
+  if [[ $state == on ]]; then
+    say "TgWebProxy для $name включён."
+  else
+    say "TgWebProxy для $name выключен."
+  fi
 }
 
 cmd_del() {
@@ -227,6 +416,7 @@ cmd_del() {
     [[ $ans =~ ^[yYдД]$ ]] || { echo "Отменено."; return; }
   fi
   local e
+  tgweb_delete_user "$name"
   for e in $(emails_of "$name"); do api POST "clients/del/$e" >/dev/null; done
   say "Пользователь $name удалён, его подписка больше не работает."
 }
@@ -276,6 +466,8 @@ ${B}kit${N} — управление 3X-UI KIT
   kit user limit имя [--gb N] [--days N] [--devices N]    изменить лимиты (0 — без ограничений)
   kit user repair имя                                      восстановить REALITY flow у старого пользователя
   kit user off имя  /  kit user on имя                    выключить и включить
+  kit user sync имя|--all                                 синхронизировать TgWebProxy
+  kit user web имя on|off                                TgWebProxy для одного пользователя
   kit user del имя                                        удалить
 EOF
 }
@@ -289,6 +481,8 @@ case "${1:-} ${2:-}" in
   "user repair") shift 2; cmd_repair "$@" ;;
   "user off") cmd_toggle "${3:-}" false ;;
   "user on") cmd_toggle "${3:-}" true ;;
+  "user sync") shift 2; cmd_sync "$@" ;;
+  "user web") shift 2; cmd_web "$@" ;;
   "user del") shift 2; cmd_del "$@" ;;
   *) usage ;;
 esac

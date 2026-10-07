@@ -1,0 +1,144 @@
+diff --git a/internal/database/model/model.go b/internal/database/model/model.go
+--- a/internal/database/model/model.go
++++ b/internal/database/model/model.go
+@@
+ func (ClientInbound) TableName() string { return "client_inbounds" }
+ 
++// ClientExternalInbound stores desired attachment to a non-Xray provider.
++// Provider is deliberately a string namespace, not an inbound_id: this is the
++// type-level boundary that prevents an external attachment reaching Xray.
++type ClientExternalInbound struct {
++	ClientId  int    `json:"clientId" gorm:"primaryKey;column:client_id;index"`
++	Provider  string `json:"provider" gorm:"primaryKey;column:provider;size:64"`
++	CreatedAt int64  `json:"createdAt" gorm:"autoCreateTime:milli"`
++}
++
++func (ClientExternalInbound) TableName() string { return "client_external_inbounds" }
++
+ type ClientHwid struct {
+diff --git a/internal/database/db.go b/internal/database/db.go
+--- a/internal/database/db.go
++++ b/internal/database/db.go
+@@
+ 		&model.ClientRecord{},
+ 		&model.ClientInbound{},
++		&model.ClientExternalInbound{},
+ 		&model.ClientHwid{},
+diff --git a/internal/database/migrate_data.go b/internal/database/migrate_data.go
+--- a/internal/database/migrate_data.go
++++ b/internal/database/migrate_data.go
+@@
+ 		&model.ClientRecord{},
+ 		&model.ClientInbound{},
++		&model.ClientExternalInbound{},
+ 		&model.ClientHwid{},
+diff --git a/internal/web/service/client_external_inbound.go b/internal/web/service/client_external_inbound.go
+new file mode 100644
+--- /dev/null
++++ b/internal/web/service/client_external_inbound.go
+@@
++package service
++
++import (
++	"errors"
++	"sort"
++	"strings"
++	"time"
++
++	"github.com/mhsanaei/3x-ui/v3/internal/database"
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++	"github.com/mhsanaei/3x-ui/v3/internal/util/common"
++	"gorm.io/gorm"
++	"gorm.io/gorm/clause"
++)
++
++const ExternalInboundTgWeb = "tgweb"
++
++func normalizeExternalInboundKeys(keys []string) ([]string, error) {
++	seen := map[string]struct{}{}
++	out := make([]string, 0, len(keys))
++	for _, raw := range keys {
++		key := strings.ToLower(strings.TrimSpace(raw))
++		if key == "" {
++			continue
++		}
++		if key != ExternalInboundTgWeb {
++			return nil, common.NewError("unknown external inbound provider:", key)
++		}
++		if _, ok := seen[key]; ok {
++			continue
++		}
++		seen[key] = struct{}{}
++		out = append(out, key)
++	}
++	sort.Strings(out)
++	return out, nil
++}
++
++func (s *ClientService) GetExternalInboundKeysForRecord(id int) ([]string, error) {
++	var keys []string
++	err := database.GetDB().Model(&model.ClientExternalInbound{}).
++		Where("client_id = ?", id).Order("provider ASC").Pluck("provider", &keys).Error
++	return keys, err
++}
++
++func (s *ClientService) externalInboundMap(ids []int) (map[int][]string, error) {
++	out := make(map[int][]string, len(ids))
++	if len(ids) == 0 {
++		return out, nil
++	}
++	for _, batch := range chunkInts(ids, sqlInChunk) {
++		var rows []model.ClientExternalInbound
++		if err := database.GetDB().Where("client_id IN ?", batch).
++			Order("client_id ASC, provider ASC").Find(&rows).Error; err != nil {
++			return nil, err
++		}
++		for _, row := range rows {
++			out[row.ClientId] = append(out[row.ClientId], row.Provider)
++		}
++	}
++	return out, nil
++}
++
++func (s *ClientService) AttachExternalByEmail(email string, keys []string) error {
++	keys, err := normalizeExternalInboundKeys(keys)
++	if err != nil || len(keys) == 0 {
++		return err
++	}
++	rec, err := s.GetRecordByEmail(nil, email)
++	if err != nil {
++		return err
++	}
++	now := time.Now().UnixMilli()
++	rows := make([]model.ClientExternalInbound, 0, len(keys))
++	for _, key := range keys {
++		rows = append(rows, model.ClientExternalInbound{
++			ClientId: rec.Id, Provider: key, CreatedAt: now,
++		})
++	}
++	return database.GetDB().Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
++}
++
++func (s *ClientService) DetachExternalByEmail(email string, keys []string) error {
++	keys, err := normalizeExternalInboundKeys(keys)
++	if err != nil || len(keys) == 0 {
++		return err
++	}
++	rec, err := s.GetRecordByEmail(nil, email)
++	if err != nil {
++		if errors.Is(err, gorm.ErrRecordNotFound) {
++			return nil
++		}
++		return err
++	}
++	return database.GetDB().Where("client_id = ? AND provider IN ?", rec.Id, keys).
++		Delete(&model.ClientExternalInbound{}).Error
++}
++
++func (s *ClientService) DeleteExternalByClientID(clientID int) error {
++	if clientID <= 0 {
++		return nil
++	}
++	return database.GetDB().Where("client_id = ?", clientID).
++		Delete(&model.ClientExternalInbound{}).Error
++}

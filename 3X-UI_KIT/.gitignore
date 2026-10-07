@@ -1,0 +1,11 @@
+# local databases and SQLite sidecars (never commit)
+*.db
+*.db-wal
+*.db-shm
+# raw/sensitive runtime state artifacts
+tgweb-runtime-state.json
+tgweb-runtime-production.json
+runtime-names.json
+# local build artifacts
+x-ui.it5.bin
+phase2-artifacts/

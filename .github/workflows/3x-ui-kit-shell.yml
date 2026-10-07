@@ -1,0 +1,32 @@
+name: 3X-UI KIT shell checks
+
+on:
+  push:
+    paths:
+      - "3X-UI_KIT/**/*.sh"
+      - ".github/workflows/3x-ui-kit-shell.yml"
+  pull_request:
+    paths:
+      - "3X-UI_KIT/**/*.sh"
+      - ".github/workflows/3x-ui-kit-shell.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: |
+          bash -n 3X-UI_KIT/kit.sh
+          bash -n 3X-UI_KIT/setup-tgwebproxy-main.sh
+          bash -n 3X-UI_KIT/tgweb-reconcile.sh
+          bash -n 3X-UI_KIT/setup-tgweb-edge.sh
+      - name: ShellCheck
+        run: |
+          shellcheck -x -e SC1091 3X-UI_KIT/kit.sh
+          shellcheck -x -e SC1091 3X-UI_KIT/setup-tgwebproxy-main.sh
+          shellcheck -x -e SC1091 3X-UI_KIT/tgweb-reconcile.sh
+          shellcheck -x -e SC1091 3X-UI_KIT/setup-tgweb-edge.sh

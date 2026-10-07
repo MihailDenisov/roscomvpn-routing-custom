@@ -369,3 +369,37 @@ tg://proxy?server=entry.example.com&port=443&secret=...
 ```
 
 В subscription/Clash YAML не должны появляться внутренние IP MAIN, localhost-адреса или внутренние listener-порты.
+
+
+### TgWebProxy WEB alongside MTProto
+
+The WEB relay is intentionally installed as a separate service so it cannot
+replace or reconfigure the existing MTProto/MTG inbound.
+
+On a single-port 3X-UI KIT host, public TCP/443 remains owned by nginx stream.
+The existing MTProto SNI route continues to use `127.0.0.1:10445`. Ordinary
+HTTPS reaches the existing internal TLS frontend on `127.0.0.1:10446`, where
+a dedicated `server_name` vhost forwards TgWebProxy traffic to the
+loopback-only backend `127.0.0.1:4600`. Its management API is also private on
+`127.0.0.1:9601`.
+
+Install on MAIN only after a certificate for the TgWeb hostname is available:
+
+```bash
+bash 3X-UI_KIT/setup-tgwebproxy-main.sh \
+  web.example.com /path/to/fullchain.pem /path/to/privkey.pem
+```
+
+The installer validates the existing `10446` HTTPS fallback, never edits
+`kit-stream.conf`, never edits x-ui inbounds, and refuses to reuse occupied
+backend/admin ports. Client state and traffic counters live under
+`/var/lib/tgwebproxy`; the private API token is stored in
+`/etc/tgwebproxy/admin.token`.
+
+
+The installer also enables `kit-tgweb-reconcile.timer` (30 seconds). It treats
+3x-ui and TgWebProxy traffic as one allowance: the TgWeb quota is continuously
+reduced by traffic already consumed through 3x-ui, while TgWeb's own persisted
+usage remains part of the same total. When combined usage reaches `totalGB`,
+the TgWeb capability and that user's 3x-ui client records are disabled. The
+timer only changes per-user policy; it does not stop or reconfigure MTProto/MTG.

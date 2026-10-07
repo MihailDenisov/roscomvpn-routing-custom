@@ -14,6 +14,7 @@ https://github.com/itsnotkubrick/3X-UI_KIT
 """
 
 import base64
+import html
 import http.server
 import json
 import os
@@ -63,6 +64,121 @@ def upstream(sub_id, ua, host, accept, query=""):
     except (urllib.error.URLError, OSError, socket.timeout) as e:
         log(f"upstream недоступен: {e}")
         return None, {}, b""
+
+
+def _read_tgweb_env():
+    path = "/etc/kit/tgweb.env"
+    data = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                data[k.strip()] = v.strip().strip("'\"")
+    except OSError:
+        return {}
+    return data
+
+
+def _client_email(sub_id):
+    db_path = str(CONF.get("xui_db", "/etc/x-ui/x-ui.db"))
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+        try:
+            row = con.execute("SELECT email FROM clients WHERE sub_id=? LIMIT 1", (sub_id,)).fetchone()
+        finally:
+            con.close()
+        return str(row[0]) if row and row[0] else ""
+    except (OSError, sqlite3.Error):
+        return ""
+
+
+def _tgweb_attached(email):
+    """Return desired TgWeb attachment. Legacy comment marker is transition-only."""
+    if not email:
+        return False
+    db_path = str(CONF.get("xui_db", "/etc/x-ui/x-ui.db"))
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+        try:
+            tgweb = con.execute(
+                "SELECT id FROM inbounds WHERE protocol='tgweb' ORDER BY id LIMIT 1"
+            ).fetchone()
+            if tgweb:
+                row = con.execute(
+                    "SELECT 1 FROM client_inbounds ci "
+                    "JOIN clients c ON c.id=ci.client_id "
+                    "WHERE c.email=? AND ci.inbound_id=? LIMIT 1",
+                    (email, int(tgweb[0])),
+                ).fetchone()
+                return bool(row)
+            row = con.execute("SELECT COALESCE(comment,'') FROM clients WHERE email=? LIMIT 1", (email,)).fetchone()
+            return bool(row) and "[tgweb:off]" not in str(row[0] or "")
+        finally:
+            con.close()
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return False
+
+
+def tgweb_link_for_sub(sub_id):
+    env = _read_tgweb_env()
+    domain = env.get("TGWEB_DOMAIN", "")
+    admin = env.get("TGWEB_ADMIN", "")
+    token_file = env.get("TGWEB_TOKEN_FILE", "")
+    email = _client_email(sub_id)
+    if not (domain and admin and token_file and email):
+        return ""
+    if not _tgweb_attached(email):
+        return ""
+    try:
+        with open(token_file, encoding="utf-8") as f:
+            token = f.read().strip()
+        req = urllib.request.Request(
+            admin.rstrip("/") + "/clients",
+            headers={"Authorization": "Bearer " + token},
+        )
+        with urllib.request.urlopen(req, timeout=3) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+        for item in payload if isinstance(payload, list) else []:
+            if item.get("domain") != domain:
+                continue
+            for client in item.get("clients") or []:
+                if client.get("name") == email and client.get("secret"):
+                    return f"https://t.me/webproxy?secret={client['secret']}&server={domain}"
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError, KeyError):
+        return ""
+    return ""
+
+
+def inject_tgweb_html(body, sub_id):
+    link = tgweb_link_for_sub(sub_id)
+    if not link:
+        return body
+    try:
+        text = body.decode("utf-8")
+    except UnicodeError:
+        return body
+    safe = html.escape(link, quote=True)
+    card = f"""
+    <section class="card">
+      <div class="card-head"><div class="icon">✈️</div><div><h2>Telegram WEB Proxy</h2><div class="muted">Персональная ссылка через web.maicraft.tech</div></div></div>
+      <div class="secret">
+        <div class="value" id="tgweb-url">{safe}</div>
+        <button class="btn" type="button" onclick="copyText('tgweb-url',this)">Копировать</button>
+      </div>
+      <div class="actions">
+        <a class="btn secondary" href="{safe}">Открыть в Telegram</a>
+      </div>
+    </section>
+"""
+    marker = '<div class="notice">'
+    if marker in text:
+        text = text.replace(marker, card + "\n    " + marker, 1)
+    else:
+        text = text.replace("</body>", card + "\n</body>", 1)
+    return text.encode("utf-8")
 
 
 def client_reset_info(sub_id):
@@ -299,6 +415,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if code == 200 and urllib.parse.parse_qs(query).get("format", [""])[0].lower() == "info" \
                     and "application/json" in headers.get("content-type", ""):
                 body = augment_info_json(body, sub_id)
+            if code == 200 and "text/html" in headers.get("content-type", ""):
+                body = inject_tgweb_html(body, sub_id)
             if code == 200 and clash and not awg:
                 body = rewrite_clash_endpoints(strip_awg(body))
             elif code == 200 and awg and not sub_id.endswith(("-awg", "-tg")):

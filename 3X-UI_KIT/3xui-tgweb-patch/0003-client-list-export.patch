@@ -1,0 +1,80 @@
+diff --git a/internal/web/service/client_lookup.go b/internal/web/service/client_lookup.go
+--- a/internal/web/service/client_lookup.go
++++ b/internal/web/service/client_lookup.go
+@@
+ 	for _, batch := range chunkInts(clientIds, sqlInChunk) {
+ 		var links []model.ClientInbound
+@@
+ 		}
+ 	}
++	externalAttachments, err := s.externalInboundMap(clientIds)
++	if err != nil {
++		return nil, err
++	}
+ 
+ 	trafficByEmail := make(map[string]*xray.ClientTraffic, len(emails))
+@@
+ 		out = append(out, ClientWithAttachments{
+-			ClientRecord: rows[i],
+-			InboundIds:   attachments[rows[i].Id],
+-			Traffic:      trafficByEmail[rows[i].Email],
++			ClientRecord:        rows[i],
++			InboundIds:          attachments[rows[i].Id],
++			ExternalInboundKeys: externalAttachments[rows[i].Id],
++			Traffic:             trafficByEmail[rows[i].Email],
+ 		})
+diff --git a/internal/web/service/client_paging.go b/internal/web/service/client_paging.go
+--- a/internal/web/service/client_paging.go
++++ b/internal/web/service/client_paging.go
+@@
+-	InboundIds   []int               `json:"inboundIds" example:"[3,5]"`
+-	Traffic      *xray.ClientTraffic `json:"traffic,omitempty"`
++	InboundIds          []int               `json:"inboundIds" example:"[3,5]"`
++	ExternalInboundKeys []string            `json:"externalInboundKeys,omitempty"`
++	Traffic             *xray.ClientTraffic `json:"traffic,omitempty"`
+@@
+ 	attachments := make(map[int][]int, len(ids))
+ 	for _, l := range links {
+ 		attachments[l.ClientId] = append(attachments[l.ClientId], l.InboundId)
+ 	}
++	externalAttachments, err := s.externalInboundMap(ids)
++	if err != nil {
++		return nil, err
++	}
+ 
+ 	trafficByEmail := make(map[string]*xray.ClientTraffic, len(emails))
+@@
+ 		items = append(items, toClientSlim(ClientWithAttachments{
+-			ClientRecord: *rec,
+-			InboundIds:   attachments[rec.Id],
+-			Traffic:      trafficByEmail[rec.Email],
++			ClientRecord:        *rec,
++			InboundIds:          attachments[rec.Id],
++			ExternalInboundKeys: externalAttachments[rec.Id],
++			Traffic:             trafficByEmail[rec.Email],
+ 		}))
+@@
+-		InboundIds:   c.InboundIds,
++		InboundIds:          c.InboundIds,
++		ExternalInboundKeys: c.ExternalInboundKeys,
+diff --git a/internal/web/service/client_portable.go b/internal/web/service/client_portable.go
+--- a/internal/web/service/client_portable.go
++++ b/internal/web/service/client_portable.go
+@@
+-		out = append(out, ClientCreatePayload{
+-			Client:     *client,
+-			InboundIds: attachments[rows[i].Id],
+-			LimitHwid:  rows[i].LimitHwid,
+-			Traffic:    trafficByEmail[rows[i].Email],
+-		})
++		externalKeys, err := s.GetExternalInboundKeysForRecord(rows[i].Id)
++		if err != nil {
++			return nil, err
++		}
++		out = append(out, ClientCreatePayload{
++			Client:              *client,
++			InboundIds:          attachments[rows[i].Id],
++			ExternalInboundKeys: externalKeys,
++			LimitHwid:           rows[i].LimitHwid,
++			Traffic:             trafficByEmail[rows[i].Email],
++		})

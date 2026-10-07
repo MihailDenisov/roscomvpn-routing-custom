@@ -1,0 +1,171 @@
+diff --git a/frontend/src/schemas/client.ts b/frontend/src/schemas/client.ts
+--- a/frontend/src/schemas/client.ts
++++ b/frontend/src/schemas/client.ts
+@@
+-    inboundIds: nullableNumberArray.optional(),
++    inboundIds: nullableNumberArray.optional(),
++    externalInboundKeys: nullableStringArray.optional(),
+@@
+-  inboundIds: nullableNumberArray,
++  inboundIds: nullableNumberArray,
++  externalInboundKeys: nullableStringArray.optional(),
+@@
+-  inboundIds: z.array(z.number()),
++  inboundIds: z.array(z.number()),
++  externalInboundKeys: z.array(z.string()).default([]),
+ });
+diff --git a/frontend/src/hooks/useClients.ts b/frontend/src/hooks/useClients.ts
+--- a/frontend/src/hooks/useClients.ts
++++ b/frontend/src/hooks/useClients.ts
+@@
+-  const attachMut = useMutation({
+-    mutationFn: ({ email, inboundIds }: { email: string; inboundIds: number[] }) =>
++  const attachMut = useMutation({
++    mutationFn: ({ email, inboundIds, externalInboundKeys }: {
++      email: string; inboundIds: number[]; externalInboundKeys?: string[];
++    }) =>
+       HttpUtil.post(
+         `/panel/api/clients/${encodeURIComponent(email)}/attach`,
+-        { inboundIds },
++        { inboundIds, externalInboundKeys: externalInboundKeys ?? [] },
+@@
+-  const detachMut = useMutation({
+-    mutationFn: ({ email, inboundIds }: { email: string; inboundIds: number[] }) =>
++  const detachMut = useMutation({
++    mutationFn: ({ email, inboundIds, externalInboundKeys }: {
++      email: string; inboundIds: number[]; externalInboundKeys?: string[];
++    }) =>
+       HttpUtil.post(
+         `/panel/api/clients/${encodeURIComponent(email)}/detach`,
+-        { inboundIds },
++        { inboundIds, externalInboundKeys: externalInboundKeys ?? [] },
+@@
+-  const attach = useCallback(
+-    (email: string, inboundIds: number[]) => {
++  const attach = useCallback(
++    (email: string, inboundIds: number[], externalInboundKeys: string[] = []) => {
+       if (!email) return Promise.resolve(null as unknown as Msg<unknown>);
+-      return attachMut.mutateAsync({ email, inboundIds });
++      return attachMut.mutateAsync({ email, inboundIds, externalInboundKeys });
+@@
+-  const detach = useCallback(
+-    (email: string, inboundIds: number[]) => {
++  const detach = useCallback(
++    (email: string, inboundIds: number[], externalInboundKeys: string[] = []) => {
+       if (!email) return Promise.resolve(null as unknown as Msg<unknown>);
+-      return detachMut.mutateAsync({ email, inboundIds });
++      return detachMut.mutateAsync({ email, inboundIds, externalInboundKeys });
+diff --git a/frontend/src/pages/clients/ClientFormModal.tsx b/frontend/src/pages/clients/ClientFormModal.tsx
+--- a/frontend/src/pages/clients/ClientFormModal.tsx
++++ b/frontend/src/pages/clients/ClientFormModal.tsx
+@@
+   Switch,
++  Checkbox,
+   Tabs,
+@@
+ interface SaveMetaEdit {
+@@
+   attach: number[];
+   detach: number[];
++  attachExternal: string[];
++  detachExternal: string[];
+@@
+ interface SaveCreatePayload {
+   client: Record<string, unknown>;
+   inboundIds: number[];
++  externalInboundKeys: string[];
+ }
+@@
+   attachedExternalLinks?: ExternalLink[];
+   attachedIds?: number[];
++  attachedExternalInboundKeys?: string[];
+@@
+   attachedExternalLinks = [],
+   attachedIds = [],
++  attachedExternalInboundKeys = [],
+@@
+   inboundIds: [],
++  externalInboundKeys: [],
+   externalLinks: [],
+@@
+       inboundIds: values.inboundIds,
++      externalInboundKeys: values.externalInboundKeys,
+     });
+@@
+         const toAttach = [...next].filter((id) => !original.has(id));
+         const toDetach = [...original].filter((id) => !next.has(id));
++        const originalExternal = new Set(attachedExternalInboundKeys || []);
++        const nextExternal = new Set(values.externalInboundKeys || []);
++        const attachExternal = [...nextExternal].filter((key) => !originalExternal.has(key));
++        const detachExternal = [...originalExternal].filter((key) => !nextExternal.has(key));
+         msg = await save(clientPayload, {
+@@
+           attach: toAttach,
+           detach: toDetach,
++          attachExternal,
++          detachExternal,
+           externalLinks,
+@@
+-          { client: clientPayload, inboundIds: values.inboundIds },
++          {
++            client: clientPayload,
++            inboundIds: values.inboundIds,
++            externalInboundKeys: values.externalInboundKeys || [],
++          },
+@@
+         inboundIds: attachedIds || [],
++        externalInboundKeys: attachedExternalInboundKeys || [],
+         externalLinks: toExternalLinkRows(attachedExternalLinks),
+@@
+                       <Form.Item label={t('pages.clients.attachedInbounds')} required={!isEdit}>
+@@
+                         <Select
+@@
+                         />
++                        <div style={{ marginTop: 8 }}>
++                          <Controller
++                            name="externalInboundKeys"
++                            control={methods.control}
++                            render={({ field }) => (
++                              <Tooltip title="External Telegram WebProxy. Does not create an Xray inbound.">
++                                <Checkbox
++                                  checked={(field.value || []).includes('tgweb')}
++                                  onChange={(e) => field.onChange(e.target.checked ? ['tgweb'] : [])}
++                                >
++                                  Telegram WebProxy <Tag>External</Tag>
++                                </Checkbox>
++                              </Tooltip>
++                            )}
++                          />
++                        </div>
+                       </Form.Item>
+diff --git a/frontend/src/pages/clients/ClientsPage.tsx b/frontend/src/pages/clients/ClientsPage.tsx
+--- a/frontend/src/pages/clients/ClientsPage.tsx
++++ b/frontend/src/pages/clients/ClientsPage.tsx
+@@
+   const [editingAttachedIds, setEditingAttachedIds] = useState<number[]>([]);
++  const [editingExternalInboundKeys, setEditingExternalInboundKeys] = useState<string[]>([]);
+@@
+       setEditingAttachedIds([...ids]);
++      setEditingExternalInboundKeys(
++        Array.isArray(full?.externalInboundKeys) ? [...full.externalInboundKeys] : [],
++      );
+@@
+             attach: number[];
+             detach: number[];
++            attachExternal: string[];
++            detachExternal: string[];
+@@
+-      if (Array.isArray(meta.attach) && meta.attach.length > 0) {
+-        const r = await attach(emailKey, meta.attach);
++      if (meta.attach.length > 0 || meta.attachExternal.length > 0) {
++        const r = await attach(emailKey, meta.attach, meta.attachExternal);
+         if (!r?.success) return r;
+       }
+-      if (Array.isArray(meta.detach) && meta.detach.length > 0) {
+-        const r = await detach(emailKey, meta.detach);
++      if (meta.detach.length > 0 || meta.detachExternal.length > 0) {
++        const r = await detach(emailKey, meta.detach, meta.detachExternal);
+@@
+             attachedIds={editingAttachedIds}
++            attachedExternalInboundKeys={editingExternalInboundKeys}
