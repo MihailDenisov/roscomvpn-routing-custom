@@ -96,7 +96,7 @@ def _client_email(sub_id):
 
 
 def _tgweb_attached(email):
-    """Return desired TgWeb attachment. Legacy comment marker is transition-only."""
+    """Return effective panel-side TgWeb access for the canonical client."""
     if not email:
         return False
     db_path = str(CONF.get("xui_db", "/etc/x-ui/x-ui.db"))
@@ -104,18 +104,24 @@ def _tgweb_attached(email):
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
         try:
             tgweb = con.execute(
-                "SELECT id FROM inbounds WHERE protocol='tgweb' ORDER BY id LIMIT 1"
+                "SELECT id, enable FROM inbounds WHERE protocol='tgweb' ORDER BY id LIMIT 1"
             ).fetchone()
             if tgweb:
+                if not bool(tgweb[1]):
+                    return False
                 row = con.execute(
                     "SELECT 1 FROM client_inbounds ci "
                     "JOIN clients c ON c.id=ci.client_id "
-                    "WHERE c.email=? AND ci.inbound_id=? LIMIT 1",
+                    "WHERE c.email=? AND c.enable=1 AND ci.inbound_id=? LIMIT 1",
                     (email, int(tgweb[0])),
                 ).fetchone()
                 return bool(row)
-            row = con.execute("SELECT COALESCE(comment,'') FROM clients WHERE email=? LIMIT 1", (email,)).fetchone()
-            return bool(row) and "[tgweb:off]" not in str(row[0] or "")
+            # Pre-migration compatibility only. After migration client_inbounds is authoritative.
+            row = con.execute(
+                "SELECT enable, COALESCE(comment,'') FROM clients WHERE email=? LIMIT 1",
+                (email,),
+            ).fetchone()
+            return bool(row) and bool(row[0]) and "[tgweb:off]" not in str(row[1] or "")
         finally:
             con.close()
     except (OSError, sqlite3.Error, ValueError, TypeError):
@@ -145,7 +151,7 @@ def tgweb_link_for_sub(sub_id):
             if item.get("domain") != domain:
                 continue
             for client in item.get("clients") or []:
-                if client.get("name") == email and client.get("secret"):
+                if client.get("name") == email and client.get("secret") and client.get("enabled", False):
                     return f"https://t.me/webproxy?secret={client['secret']}&server={domain}"
     except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError, KeyError):
         return ""
@@ -153,6 +159,7 @@ def tgweb_link_for_sub(sub_id):
 
 
 def inject_tgweb_html(body, sub_id):
+    """Add TgWeb beside MTProto inside the existing expandable links menu."""
     link = tgweb_link_for_sub(sub_id)
     if not link:
         return body
@@ -160,24 +167,37 @@ def inject_tgweb_html(body, sub_id):
         text = body.decode("utf-8")
     except UnicodeError:
         return body
-    safe = html.escape(link, quote=True)
-    card = f"""
-    <section class="card">
-      <div class="card-head"><div class="icon">✈️</div><div><h2>Telegram WEB Proxy</h2><div class="muted">Персональная ссылка через web.maicraft.tech</div></div></div>
-      <div class="secret">
-        <div class="value" id="tgweb-url">{safe}</div>
-        <button class="btn" type="button" onclick="copyText('tgweb-url',this)">Копировать</button>
-      </div>
-      <div class="actions">
-        <a class="btn secondary" href="{safe}">Открыть в Telegram</a>
-      </div>
-    </section>
+
+    marker = '<div class="links-wrap" id="links-box">'
+    if marker not in text:
+        return body
+
+    safe_share = html.escape(link, quote=True)
+    parsed = urllib.parse.urlsplit(link)
+    params = urllib.parse.parse_qs(parsed.query)
+    secret = (params.get("secret") or [""])[0]
+    server = (params.get("server") or [""])[0]
+    if not (secret and server):
+        return body
+    deep = "tg://webproxy?" + urllib.parse.urlencode({"server": server, "secret": secret})
+    safe_deep = html.escape(deep, quote=True)
+
+    item = f"""
+            <article class="link-card tgweb-link-card" data-kind="tgweb"
+              data-link="{safe_share}" data-open-link="{safe_deep}">
+              <div class="link-top"><div class="proto-icon">✈️</div><div class="proto-title">Telegram WebProxy</div></div>
+              <div class="value link-value">{safe_share}</div>
+              <div class="actions">
+                <button class="btn" type="button" onclick="copyLink(this)">Копировать</button>
+                <a class="btn secondary open-link" href="{safe_deep}">Открыть в Telegram</a>
+              </div>
+              <details class="mini-details">
+                <summary>▦ QR-код</summary>
+                <div class="details-body"><div class="qr-box link-qr"></div></div>
+              </details>
+            </article>
 """
-    marker = '<div class="notice">'
-    if marker in text:
-        text = text.replace(marker, card + "\n    " + marker, 1)
-    else:
-        text = text.replace("</body>", card + "\n</body>", 1)
+    text = text.replace(marker, marker + "\n" + item, 1)
     return text.encode("utf-8")
 
 
