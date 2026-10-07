@@ -1,0 +1,362 @@
+diff --git a/internal/web/service/tgweb_crud_test.go b/internal/web/service/tgweb_crud_test.go
+new file mode 100644
+index 00000000..d0e2f862
+--- /dev/null
++++ b/internal/web/service/tgweb_crud_test.go
+@@ -0,0 +1,356 @@
++package service
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++
++	"github.com/mhsanaei/3x-ui/v3/internal/database"
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++)
++
++// seedTgWebCrudFixtures creates one vless inbound and one tgweb virtual
++// inbound (settings pinned to {"clients":[]}) and attaches the mixed client
++// to both through the normal add path.
++func seedTgWebCrudFixtures(t *testing.T, svc *ClientService, inboundSvc *InboundService, email string) (vlessIB, tgwebIB *model.Inbound) {
++	t.Helper()
++	vlessIB = mkInbound(t, 54101, model.VLESS, `{"clients":[]}`)
++	tgwebIB = seedTgWebInbound(t, 54102)
++
++	client := model.Client{
++		Email:  email,
++		ID:     "22222222-2222-2222-2222-222222222222",
++		SubID:  email + "-sub",
++		Enable: true,
++	}
++	if _, err := svc.AddInboundClient(inboundSvc, &model.Inbound{
++		Id:       vlessIB.Id,
++		Settings: clientsSettings(t, []model.Client{client}),
++	}); err != nil {
++		t.Fatalf("attach vless: %v", err)
++	}
++	if _, err := svc.AddInboundClient(inboundSvc, &model.Inbound{
++		Id:       tgwebIB.Id,
++		Settings: clientsSettings(t, []model.Client{client}),
++	}); err != nil {
++		t.Fatalf("attach tgweb: %v", err)
++	}
++	return vlessIB, tgwebIB
++}
++
++func seedTgWebInbound(t *testing.T, port int) *model.Inbound {
++	t.Helper()
++	in := &model.Inbound{
++		Tag:      "tgweb-crud",
++		Enable:   true,
++		Port:     port,
++		Protocol: model.TgWeb,
++		Settings: `{"publicHost":"web.maicraft.tech","publicPort":443,"clients":[]}`,
++	}
++	if err := database.GetDB().Create(in).Error; err != nil {
++		t.Fatalf("seed tgweb inbound: %v", err)
++	}
++	return in
++}
++
++func tgwebSettingsClients(t *testing.T, ib *model.Inbound) []any {
++	t.Helper()
++	var settings map[string]any
++	if err := json.Unmarshal([]byte(ib.Settings), &settings); err != nil {
++		t.Fatalf("tgweb settings json: %v", err)
++	}
++	clients, _ := settings["clients"].([]any)
++	return clients
++}
++
++func attachmentCount(t *testing.T, inboundId int, email string) int64 {
++	t.Helper()
++	var n int64
++	if err := database.GetDB().Model(&model.ClientInbound{}).
++		Joins("JOIN clients ON clients.id = client_inbounds.client_id").
++		Where("client_inbounds.inbound_id = ? AND clients.email = ?", inboundId, email).
++		Count(&n).Error; err != nil {
++		t.Fatalf("attachment count: %v", err)
++	}
++	return n
++}
++
++func reloadInbound(t *testing.T, id int) *model.Inbound {
++	t.Helper()
++	var ib model.Inbound
++	if err := database.GetDB().First(&ib, id).Error; err != nil {
++		t.Fatalf("reload inbound %d: %v", id, err)
++	}
++	return &ib
++}
++
++// TestUpdateTgWebAttachedClient covers DEFECT-A: a normal UpdateByEmail on a
++// client attached to both vless and tgweb must succeed, persist the canonical
++// record change, keep both relations and the VPN credentials, leave the tgweb
++// settings JSON empty, and never request an Xray restart for the tgweb part.
++func TestUpdateTgWebAttachedClient(t *testing.T) {
++	setupBulkDB(t)
++	svc := &ClientService{}
++	inboundSvc := &InboundService{}
++	email := "mv-crud@x"
++	vlessIB, tgwebIB := seedTgWebCrudFixtures(t, svc, inboundSvc, email)
++
++	rec, err := svc.GetRecordByEmail(nil, email)
++	if err != nil {
++		t.Fatalf("GetRecordByEmail: %v", err)
++	}
++	updated := rec.ToClient()
++	updated.Comment = "iteration5 comment"
++	updated.ExpiryTime = 1893456000000
++	updated.TotalGB = 64
++	// needRestart may be true here through the normal VPN path (no live Xray
++	// in tests, so the vless fan-out falls back to a restart request) — that is
++	// pre-existing VPN behavior, not TgWeb pollution. TgWeb-only isolation is
++	// pinned by TestTgWebCrudDoesNotRequestXrayRestart.
++	_, err = svc.UpdateByEmail(inboundSvc, email, *updated, 0)
++	if err != nil {
++		t.Fatalf("UpdateByEmail (DEFECT-A regression): %v", err)
++	}
++
++	got, err := svc.GetRecordByEmail(nil, email)
++	if err != nil {
++		t.Fatalf("record reload: %v", err)
++	}
++	if got.Comment != "iteration5 comment" {
++		t.Fatalf("comment = %q, want persisted update", got.Comment)
++	}
++	if got.ExpiryTime != 1893456000000 {
++		t.Fatalf("expiry_time = %d, want 1893456000000", got.ExpiryTime)
++	}
++	if got.TotalGB != 64 {
++		t.Fatalf("total_gb = %d, want 64", got.TotalGB)
++	}
++	if got.UUID != "22222222-2222-2222-2222-222222222222" {
++		t.Fatalf("VPN credential rotated: uuid = %q", got.UUID)
++	}
++	if n := attachmentCount(t, tgwebIB.Id, email); n != 1 {
++		t.Fatalf("tgweb relation count = %d, want 1", n)
++	}
++	if n := attachmentCount(t, vlessIB.Id, email); n != 1 {
++		t.Fatalf("vless relation count = %d, want 1", n)
++	}
++	if clients := tgwebSettingsClients(t, reloadInbound(t, tgwebIB.Id)); len(clients) != 0 {
++		t.Fatalf("tgweb settings.clients = %d entries, want 0", len(clients))
++	}
++}
++
++// TestDetachTgWebClient covers DEFECT-B: DetachByEmail from the tgweb inbound
++// must actually remove the client_inbounds row while keeping the record and
++// every VPN attachment.
++func TestDetachTgWebClient(t *testing.T) {
++	setupBulkDB(t)
++	svc := &ClientService{}
++	inboundSvc := &InboundService{}
++	email := "d2ieytntgp-crud@x"
++	vlessIB, tgwebIB := seedTgWebCrudFixtures(t, svc, inboundSvc, email)
++
++	needRestart, err := svc.DetachByEmail(inboundSvc, tgwebIB.Id, email)
++	if err != nil {
++		t.Fatalf("DetachByEmail (DEFECT-B regression): %v", err)
++	}
++	if needRestart {
++		t.Fatal("tgweb detach must not request an Xray restart")
++	}
++
++	if n := attachmentCount(t, tgwebIB.Id, email); n != 0 {
++		t.Fatalf("tgweb relation still present (count %d)", n)
++	}
++	if n := attachmentCount(t, vlessIB.Id, email); n != 1 {
++		t.Fatalf("vless relation count = %d, want 1", n)
++	}
++	if _, err := svc.GetRecordByEmail(nil, email); err != nil {
++		t.Fatalf("ClientRecord must survive detach: %v", err)
++	}
++	rec, _ := svc.GetRecordByEmail(nil, email)
++	if !rec.Enable {
++		t.Fatal("detach must not change the global enable state")
++	}
++}
++
++// TestReattachTgWebClientPreservesIdentity covers the reattach half of
++// DEFECT-B: after a detach, the normal attach path restores the relation
++// without minting new credentials, and the tgweb settings JSON stays empty.
++func TestReattachTgWebClientPreservesIdentity(t *testing.T) {
++	setupBulkDB(t)
++	svc := &ClientService{}
++	inboundSvc := &InboundService{}
++	email := "reattach-crud@x"
++	vlessIB, tgwebIB := seedTgWebCrudFixtures(t, svc, inboundSvc, email)
++
++	if _, err := svc.DetachByEmail(inboundSvc, tgwebIB.Id, email); err != nil {
++		t.Fatalf("detach: %v", err)
++	}
++	rec, err := svc.GetRecordByEmail(nil, email)
++	if err != nil {
++		t.Fatalf("record: %v", err)
++	}
++	if _, err := svc.Attach(inboundSvc, rec.Id, []int{tgwebIB.Id}); err != nil {
++		t.Fatalf("reattach: %v", err)
++	}
++
++	if n := attachmentCount(t, tgwebIB.Id, email); n != 1 {
++		t.Fatalf("tgweb relation count after reattach = %d, want 1", n)
++	}
++	got, err := svc.GetRecordByEmail(nil, email)
++	if err != nil {
++		t.Fatalf("record reload: %v", err)
++	}
++	if got.UUID != "22222222-2222-2222-2222-222222222222" {
++		t.Fatalf("reattach rotated the identity: uuid = %q", got.UUID)
++	}
++	if clients := tgwebSettingsClients(t, reloadInbound(t, tgwebIB.Id)); len(clients) != 0 {
++		t.Fatalf("tgweb settings.clients = %d entries after reattach, want 0", len(clients))
++	}
++	if n := attachmentCount(t, vlessIB.Id, email); n != 1 {
++		t.Fatalf("vless relation count = %d, want 1", n)
++	}
++}
++
++// TestBulkDisableTgWebOnlyClient covers DEFECT-C (disable half) for a client
++// attached ONLY to tgweb: BulkSetEnable(false) must persist clients.enable
++// and must not report "Client Not Found In Inbound".
++func TestBulkDisableTgWebOnlyClient(t *testing.T) {
++	setupBulkDB(t)
++	svc := &ClientService{}
++	inboundSvc := &InboundService{}
++	email := "tgweb-only-disable@x"
++	tgwebIB := seedTgWebInbound(t, 54103)
++
++	if _, err := svc.Create(inboundSvc, &ClientCreatePayload{
++		Client:     model.Client{Email: email, SubID: email + "-sub", Enable: true},
++		InboundIds: []int{tgwebIB.Id},
++	}); err != nil {
++		t.Fatalf("create tgweb-only client: %v", err)
++	}
++
++	result, needRestart, err := svc.BulkSetEnable(inboundSvc, []string{email}, false)
++	if err != nil {
++		t.Fatalf("BulkSetEnable(false) (DEFECT-C regression): %v", err)
++	}
++	if needRestart {
++		t.Fatal("tgweb bulk disable must not request an Xray restart")
++	}
++	if result.Changed != 1 {
++		t.Fatalf("Changed = %d, want 1 (skipped: %+v)", result.Changed, result.Skipped)
++	}
++	for _, sk := range result.Skipped {
++		if strings.Contains(sk.Reason, "Not Found") {
++			t.Fatalf("tgweb-only client skipped: %+v", sk)
++		}
++	}
++	if got := recordEnableOf(t, svc, email); got {
++		t.Fatal("clients.enable = true, want false")
++	}
++}
++
++// TestBulkEnableTgWebOnlyClient covers DEFECT-C (enable half): re-enabling a
++// tgweb-only client persists clients.enable again.
++func TestBulkEnableTgWebOnlyClient(t *testing.T) {
++	setupBulkDB(t)
++	svc := &ClientService{}
++	inboundSvc := &InboundService{}
++	email := "tgweb-only-enable@x"
++	tgwebIB := seedTgWebInbound(t, 54104)
++
++	if _, err := svc.Create(inboundSvc, &ClientCreatePayload{
++		Client:     model.Client{Email: email, SubID: email + "-sub", Enable: false},
++		InboundIds: []int{tgwebIB.Id},
++	}); err != nil {
++		t.Fatalf("create tgweb-only client: %v", err)
++	}
++
++	result, needRestart, err := svc.BulkSetEnable(inboundSvc, []string{email}, true)
++	if err != nil {
++		t.Fatalf("BulkSetEnable(true) (DEFECT-C regression): %v", err)
++	}
++	if needRestart {
++		t.Fatal("tgweb bulk enable must not request an Xray restart")
++	}
++	if result.Changed != 1 {
++		t.Fatalf("Changed = %d, want 1 (skipped: %+v)", result.Changed, result.Skipped)
++	}
++	if got := recordEnableOf(t, svc, email); !got {
++		t.Fatal("clients.enable = false, want true")
++	}
++	if n := attachmentCount(t, tgwebIB.Id, email); n != 1 {
++		t.Fatalf("tgweb relation count = %d, want 1", n)
++	}
++}
++
++// TestDetachTgWebDoesNotTouchVPNAttachments pins DEFECT-B scope: detaching
++// from tgweb leaves every VPN (vless) attachment byte-identical.
++func TestDetachTgWebDoesNotTouchVPNAttachments(t *testing.T) {
++	setupBulkDB(t)
++	svc := &ClientService{}
++	inboundSvc := &InboundService{}
++	email := "detach-scope@x"
++	vlessIB, tgwebIB := seedTgWebCrudFixtures(t, svc, inboundSvc, email)
++	before := reloadInbound(t, vlessIB.Id).Settings
++
++	if _, err := svc.DetachByEmail(inboundSvc, tgwebIB.Id, email); err != nil {
++		t.Fatalf("detach: %v", err)
++	}
++
++	if after := reloadInbound(t, vlessIB.Id).Settings; after != before {
++		t.Fatalf("vless settings changed by tgweb detach:\nbefore: %s\nafter: %s", before, after)
++	}
++	if n := attachmentCount(t, vlessIB.Id, email); n != 1 {
++		t.Fatalf("vless relation count = %d, want 1", n)
++	}
++	if got := jsonClientEnable(t, inboundSvc, vlessIB.Id, email); !got {
++		t.Fatal("vless JSON client enable flipped by tgweb detach")
++	}
++}
++
++// TestTgWebCrudDoesNotRequestXrayRestart pins the Xray-isolation side of all
++// three fixes: on a TgWeb-ONLY client, update, detach, reattach and bulk
++// enable/disable never set needRestart, and the tgweb settings JSON stays
++// {"clients":[]} across the whole CRUD cycle.
++func TestTgWebCrudDoesNotRequestXrayRestart(t *testing.T) {
++	setupBulkDB(t)
++	svc := &ClientService{}
++	inboundSvc := &InboundService{}
++	email := "norestart-crud@x"
++	tgwebIB := seedTgWebInbound(t, 54105)
++
++	if _, err := svc.Create(inboundSvc, &ClientCreatePayload{
++		Client:     model.Client{Email: email, SubID: email + "-sub", Enable: true},
++		InboundIds: []int{tgwebIB.Id},
++	}); err != nil {
++		t.Fatalf("create tgweb-only client: %v", err)
++	}
++
++	rec, err := svc.GetRecordByEmail(nil, email)
++	if err != nil {
++		t.Fatalf("record: %v", err)
++	}
++	updated := rec.ToClient()
++	updated.Comment = "no-restart check"
++	updated.ExpiryTime = 1893456000000
++	updated.TotalGB = 32
++	nr, err := svc.Update(inboundSvc, rec.Id, *updated, 0)
++	if err != nil || nr {
++		t.Fatalf("update: err=%v needRestart=%v, want nil/false", err, nr)
++	}
++
++	if nr, err := svc.Detach(inboundSvc, rec.Id, []int{tgwebIB.Id}); err != nil || nr {
++		t.Fatalf("detach: err=%v needRestart=%v, want nil/false", err, nr)
++	}
++	if nr, err := svc.Attach(inboundSvc, rec.Id, []int{tgwebIB.Id}); err != nil || nr {
++		t.Fatalf("reattach: err=%v needRestart=%v, want nil/false", err, nr)
++	}
++	if _, nr, err := svc.BulkSetEnable(inboundSvc, []string{email}, false); err != nil || nr {
++		t.Fatalf("bulk disable: err=%v needRestart=%v, want nil/false", err, nr)
++	}
++	if _, nr, err := svc.BulkSetEnable(inboundSvc, []string{email}, true); err != nil || nr {
++		t.Fatalf("bulk enable: err=%v needRestart=%v, want nil/false", err, nr)
++	}
++	if clients := tgwebSettingsClients(t, reloadInbound(t, tgwebIB.Id)); len(clients) != 0 {
++		t.Fatalf("tgweb settings.clients = %d entries after CRUD cycle, want 0", len(clients))
++	}
++}
