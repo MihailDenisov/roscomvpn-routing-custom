@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily TgWeb cover-site update
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=45m
+AccuracySec=5m
+Unit=update-tgweb-cover.service
+
+[Install]
+WantedBy=timers.target
