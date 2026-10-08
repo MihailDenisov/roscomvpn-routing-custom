@@ -40,6 +40,7 @@ say "Discovering local assets"
   grep -Eo '/assets/[A-Za-z0-9._/-]+' "$tmp/site/index.html" || true
   grep -Eo '/assets/[A-Za-z0-9._/-]+' "$tmp/site/style.css" || true
   grep -Eo '/assets/[A-Za-z0-9._/-]+' "$tmp/site/script.js" || true
+  grep -Eo '/assets/[A-Za-z0-9._/-]+' "$tmp/site/site.webmanifest" || true
 } | sort -u >"$tmp/assets.txt"
 
 while IFS= read -r path; do
@@ -93,7 +94,16 @@ sleep 1
 systemctl is-active --quiet "$SERVICE" || die "$SERVICE is not active after reload"
 
 say "Local validation"
-sudo -u "$OWNER" test -r "$SITE_DIR/index.html" || die "service user cannot read index.html"
+runuser -u "$OWNER" -- test -r "$SITE_DIR/index.html" || die "service user cannot read index.html"
+
+PUBLIC_URL="${PUBLIC_URL:-https://web.maicraft.tech}"
+say "Public smoke test: $PUBLIC_URL"
+public_title=$(curl -fsSkL --connect-timeout 10 --max-time 30 "$PUBLIC_URL/" | grep -m1 -E '<title>|MAICraft' || true)
+[[ -n $public_title ]] || die "public landing smoke test failed"
+
+normal_hash=$(curl -fsSkL --connect-timeout 10 --max-time 30 "$PUBLIC_URL/" | sha256sum | awk '{print $1}')
+wrong_hash=$(curl -fsSkL --connect-timeout 10 --max-time 30 "$PUBLIC_URL/?bridge=00000000000000000000000000000000" | sha256sum | awk '{print $1}')
+[[ $normal_hash == "$wrong_hash" ]] || die "anti-probe check failed: normal and wrong-bridge bodies differ"
 
 say "Updated successfully"
 printf 'old index sha256: %s\n' "${old_hash:-none}"
