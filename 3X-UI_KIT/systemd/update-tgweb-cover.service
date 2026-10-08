@@ -1,0 +1,14 @@
+[Unit]
+Description=Update TgWeb cover site from maicraft.tech
+After=network-online.target tgwebproxy.service
+Wants=network-online.target
+ConditionPathExists=/usr/local/sbin/update-tgweb-cover
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/update-tgweb-cover
+User=root
+Group=root
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
